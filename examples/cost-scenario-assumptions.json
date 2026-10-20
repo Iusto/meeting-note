@@ -1,0 +1,23 @@
+{
+  "priceVersion": "SYNTHETIC-EXAMPLE-NOT-A-PROVIDER-PRICE",
+  "asOf": "SYNTHETIC-INPUT-FOR-OFFLINE-PLANNING",
+  "stt": {
+    "baseUsdPerMinute": 0.010000,
+    "diarizationUsdPerMinute": 0.002000,
+    "keytermUsdPerMinute": 0.001000
+  },
+  "llm": {
+    "inputUsdPerMillionTokens": 2.000000,
+    "outputUsdPerMillionTokens": 8.000000,
+    "summary": {
+      "inputTokensPerHour": 10000,
+      "outputTokensPerHour": 1000
+    },
+    "correction": {
+      "inputTokensPerHour": 20000,
+      "outputTokensPerHour": 2000
+    }
+  },
+  "scenariosHours": [36, 48, 60],
+  "budgetUsd": 40.000000
+}

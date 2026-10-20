@@ -1,0 +1,9 @@
+.git
+.env
+.tools
+.omx
+**/node_modules
+**/target
+**/dist
+**/coverage
+data

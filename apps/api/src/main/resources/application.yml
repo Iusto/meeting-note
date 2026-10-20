@@ -1,0 +1,19 @@
+spring:
+  application.name: ai-meeting-api
+  datasource:
+    url: ${DATABASE_URL:jdbc:postgresql://localhost:5432/ai_meeting}
+    username: ${DATABASE_USER:ai_meeting}
+    password: ${DATABASE_PASSWORD:ai_meeting}
+  flyway:
+    enabled: true
+  jackson:
+    default-property-inclusion: non_null
+management:
+  endpoints.web.exposure.include: health
+  endpoint.health.show-details: never
+app:
+  owner-token: ${APP_OWNER_TOKEN}
+  allowed-origins: ${APP_ALLOWED_ORIGINS:http://localhost:5173}
+  recording-root: ${APP_RECORDING_ROOT:./data/recordings}
+  paid-api-tests-enabled: ${PAID_API_TESTS_ENABLED:false}
+  fake-event-delay-ms: ${APP_FAKE_EVENT_DELAY_MS:100}

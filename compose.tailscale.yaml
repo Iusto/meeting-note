@@ -1,0 +1,12 @@
+services:
+  api:
+    environment:
+      APP_ALLOWED_ORIGINS: https://${TAILSCALE_HOST:?Set TAILSCALE_HOST to the exact Tailscale MagicDNS hostname}
+      SERVER_FORWARD_HEADERS_STRATEGY: framework
+      SERVER_TOMCAT_REDIRECT_CONTEXT_ROOT: 'false'
+  web:
+    environment:
+      TAILSCALE_HOST: ${TAILSCALE_HOST:?Set TAILSCALE_HOST to the exact Tailscale MagicDNS hostname}
+      NGINX_ENVSUBST_FILTER: '^TAILSCALE_HOST$$'
+    volumes:
+      - ./apps/web/nginx-tailscale.conf.template:/etc/nginx/templates/default.conf.template:ro

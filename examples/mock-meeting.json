@@ -1,0 +1,13 @@
+{
+  "meetingTitle": "가상 MES 공정 회의",
+  "topic": "MES",
+  "participants": ["화자 1", "화자 2"],
+  "events": [
+    {"type":"transcript.partial","sequence":1,"startMs":0,"endMs":2200,"speakerLabel":null,"text":"이번 로떠 번호..."},
+    {"type":"transcript.final","sequence":2,"startMs":0,"endMs":3200,"speakerLabel":"speaker_1","text":"이번 로떠 번호를 확인해주세요."},
+    {"type":"transcript.final","sequence":3,"startMs":3300,"endMs":6700,"speakerLabel":"speaker_2","text":"네, BOM 기준으로 확인하겠습니다."},
+    {"type":"speaker.updated","sequence":4,"speakerLabel":"speaker_1","displayName":"화자 1"}
+  ],
+  "expectedCorrection": "이번 LOT 번호를 확인해주세요.",
+  "note": "가상 데이터. 실제 인식 정확도의 증거가 아님."
+}

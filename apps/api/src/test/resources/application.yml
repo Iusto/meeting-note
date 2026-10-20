@@ -1,0 +1,14 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:meeting;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1
+    username: sa
+    password:
+  flyway:
+    enabled: true
+    locations: classpath:db/testmigration
+app:
+  owner-token: test-owner-token-00000000000000000
+  allowed-origins: http://localhost:5173
+  recording-root: ./target/test-recordings
+  paid-api-tests-enabled: false
+  fake-event-delay-ms: 20

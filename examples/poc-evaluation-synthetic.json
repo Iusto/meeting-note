@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "measurementOrigin": "synthetic/offline",
+  "segments": [
+    {
+      "id": "synthetic-001",
+      "startMs": 0,
+      "endMs": 2400,
+      "reference": "MES에서 LOT 42번을 확인해 주세요.",
+      "hypothesis": "MES에서 로또 42번을 확인해 주세요.",
+      "referenceSpeaker": "speaker_1",
+      "predictedSpeaker": "speaker_1",
+      "termAnnotations": [
+        {"term": "MES", "referenceCount": 1, "predictedCount": 1, "matchedCount": 1},
+        {"term": "LOT", "referenceCount": 1, "predictedCount": 0, "matchedCount": 0},
+        {"term": "로또", "referenceCount": 0, "predictedCount": 1, "matchedCount": 0}
+      ]
+    },
+    {
+      "id": "synthetic-002",
+      "startMs": 2500,
+      "endMs": 4700,
+      "reference": "BOM 수량은 105개입니다.",
+      "hypothesis": "BOM 수량은 150개입니다.",
+      "referenceSpeaker": "speaker_2",
+      "predictedSpeaker": "speaker_1",
+      "termAnnotations": [
+        {"term": "BOM", "referenceCount": 1, "predictedCount": 1, "matchedCount": 1}
+      ]
+    },
+    {
+      "id": "synthetic-003",
+      "startMs": 4800,
+      "endMs": 6200,
+      "reference": "WIP를 점검합니다.",
+      "hypothesis": "WIP를 점검합니다.",
+      "referenceSpeaker": "speaker_2",
+      "termAnnotations": [
+        {"term": "WIP", "referenceCount": 1, "predictedCount": 1, "matchedCount": 1}
+      ]
+    }
+  ],
+  "latencySamplesMs": [720, 910, 1250, 3010]
+}
