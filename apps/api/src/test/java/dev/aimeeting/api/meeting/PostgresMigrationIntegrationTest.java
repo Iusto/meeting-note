@@ -21,15 +21,18 @@ import dev.aimeeting.api.usage.ledger.UsageState;
 import dev.aimeeting.api.web.ApiException;
 import dev.aimeeting.api.recording.RecordingService;
 import dev.aimeeting.api.storage.RecordingStorage;
+import dev.aimeeting.api.provider.deepgram.DeepgramStartupRecovery;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
 import java.time.YearMonth;
+import javax.sql.DataSource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -58,6 +61,16 @@ class PostgresMigrationIntegrationTest {
     @Autowired RecordingStorage recordingStorage;
     @Autowired PlatformTransactionManager transactionManager;
     @Autowired CostLedgerService ledger;
+    @Autowired DataSource dataSource;
+
+    @BeforeEach
+    void restoreIndependentOperationalState() {
+        jdbc.update("UPDATE stream_sessions SET ended_at=COALESCE(ended_at,CURRENT_TIMESTAMP),close_reason=COALESCE(close_reason,'TEST_CLEANUP') WHERE id IN (SELECT stream_session_id FROM active_deepgram_sessions)");
+        jdbc.update("DELETE FROM active_deepgram_sessions");
+        jdbc.update("UPDATE meetings SET status='STOPPED',ended_at=COALESCE(ended_at,CURRENT_TIMESTAMP) WHERE status='STARTED'");
+        jdbc.update("UPDATE runtime_state SET active_meeting_id=NULL WHERE id=1");
+        jdbc.update("UPDATE app_settings SET monthly_budget_usd=100.00,per_meeting_max_minutes=240 WHERE id=1");
+    }
 
     @DynamicPropertySource
     static void postgres(DynamicPropertyRegistry registry) {
@@ -110,6 +123,80 @@ class PostgresMigrationIntegrationTest {
         assertThat(meetings.insertFinalBatchIfAbsent(meeting.id(), batch)).isEmpty();
         assertThat(meetings.transcript(meeting.id())).extracting(TranscriptSegment::originalText)
                 .containsExactly("first ", "second");
+    }
+
+    @Test
+    void productionDatabaseAllowsOnlyOneActiveDeepgramSessionPerMeeting() throws Exception {
+        Meeting meeting = meetings.create("Concurrent Deepgram claim " + UUID.randomUUID());
+        meetings.start(meeting.id());
+        try {
+            UUID firstRequest = UUID.randomUUID();
+            UUID secondRequest = UUID.randomUUID();
+            ledger.reserve(firstRequest, deepgramRequest(meeting.id(), "1"));
+            ledger.reserve(secondRequest, deepgramRequest(meeting.id(), "1"));
+            CountDownLatch start = new CountDownLatch(1);
+            try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+                Future<Object> first = executor.submit(() -> claimDeepgramAfter(start, meeting.id(), firstRequest));
+                Future<Object> second = executor.submit(() -> claimDeepgramAfter(start, meeting.id(), secondRequest));
+                start.countDown();
+                Object firstResult = first.get(10, TimeUnit.SECONDS);
+                Object secondResult = second.get(10, TimeUnit.SECONDS);
+
+                assertThat(java.util.List.of(firstResult, secondResult).stream().filter(UUID.class::isInstance).count())
+                        .isEqualTo(1);
+                assertThat(java.util.List.of(firstResult, secondResult).stream().filter(ApiException.class::isInstance).count())
+                        .isEqualTo(1);
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM active_deepgram_sessions WHERE meeting_id=?",
+                        Integer.class, meeting.id())).isEqualTo(1);
+                assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM stream_sessions WHERE meeting_id=? AND provider='DEEPGRAM_POC'",
+                        Integer.class, meeting.id())).isEqualTo(1);
+
+                UUID winner = UUID.class.cast(firstResult instanceof UUID ? firstResult : secondResult);
+                meetings.closeStreamSession(winner, "SYNTHETIC_COMPLETE");
+                ledger.release(firstResult instanceof UUID ? secondRequest : firstRequest);
+                ledger.release(firstResult instanceof UUID ? firstRequest : secondRequest);
+            }
+        } finally {
+            meetings.stop(meeting.id());
+        }
+    }
+
+    @Test
+    void productionStartupLockPreventsCompetingRecoveryAndReconcilesAfterHolderCloses() {
+        DeepgramStartupRecovery holder = new DeepgramStartupRecovery(dataSource, meetings);
+        DeepgramStartupRecovery contender = new DeepgramStartupRecovery(dataSource, meetings);
+        DeepgramStartupRecovery successor = new DeepgramStartupRecovery(dataSource, meetings);
+        Meeting meeting = null;
+        holder.start();
+        try {
+            meeting = meetings.create("PostgreSQL restart recovery " + UUID.randomUUID());
+            meetings.start(meeting.id());
+            UUID request = UUID.randomUUID();
+            ledger.reserve(request, deepgramRequest(meeting.id(), "1"));
+            UUID session = meetings.createDeepgramStreamSession(meeting.id(), 0, request);
+            ledger.startDispatch(request);
+
+            assertThatThrownBy(contender::start).isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("Another application instance");
+            assertThat(jdbc.queryForObject("SELECT state FROM ai_usage_records WHERE id=?", String.class, request))
+                    .isEqualTo("DISPATCHED");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM active_deepgram_sessions WHERE request_id=?",
+                    Integer.class, request)).isEqualTo(1);
+
+            holder.destroy();
+            assertThat(successor.start()).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT state FROM ai_usage_records WHERE id=?", String.class, request))
+                    .isEqualTo("UNCERTAIN");
+            assertThat(jdbc.queryForObject("SELECT close_reason FROM stream_sessions WHERE id=?", String.class, session))
+                    .isEqualTo("APP_RESTART");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM active_deepgram_sessions WHERE request_id=?",
+                    Integer.class, request)).isZero();
+        } finally {
+            if (meeting != null) meetings.stop(meeting.id());
+            holder.destroy();
+            contender.destroy();
+            successor.destroy();
+        }
     }
 
     @Test
@@ -316,8 +403,22 @@ class PostgresMigrationIntegrationTest {
         }
     }
 
+    private Object claimDeepgramAfter(CountDownLatch start, UUID meetingId, UUID requestId) throws InterruptedException {
+        start.await();
+        try {
+            return meetings.createDeepgramStreamSession(meetingId, 0, requestId);
+        } catch (ApiException conflict) {
+            return conflict;
+        }
+    }
+
     private ReservationRequest costRequest(UUID meetingId, String dollars) {
         return new ReservationRequest(meetingId, "synthetic", "fixture", "SUMMARY", "fixture-v1", new BigDecimal(dollars), 120);
+    }
+
+    private ReservationRequest deepgramRequest(UUID meetingId, String dollars) {
+        return new ReservationRequest(meetingId, "DEEPGRAM_POC", "nova-3", "TRANSCRIPTION", "synthetic-rates",
+                new BigDecimal(dollars), 120);
     }
 
     private void restoreSettings(AppSettings before) {

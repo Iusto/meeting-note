@@ -12,6 +12,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import org.springframework.http.HttpStatus;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
@@ -152,9 +153,78 @@ public class MeetingRepository {
         return id;
     }
 
+    @Transactional
+    public UUID createDeepgramStreamSession(UUID meetingId, long audioOffsetMs, UUID requestId) {
+        Objects.requireNonNull(requestId, "requestId");
+        if (audioOffsetMs < 0) {
+            throw new IllegalArgumentException("audioOffsetMs must be nonnegative");
+        }
+        Meeting meeting = lock(meetingId);
+        if (!"STARTED".equals(meeting.status())) {
+            throw new ApiException(HttpStatus.CONFLICT, "MEETING_NOT_STARTED", "Meeting must be started first");
+        }
+        Long confirmedEnd = jdbc.queryForObject(
+                "SELECT COALESCE(MAX(end_ms), 0) FROM transcript_segments WHERE meeting_id=? AND transcript_status IN ('FINAL','CORRECTED')",
+                Long.class, meetingId);
+        long minimumOffset = confirmedEnd == null ? 0 : confirmedEnd;
+        if (audioOffsetMs < minimumOffset) {
+            throw new ApiException(HttpStatus.CONFLICT, "TRANSCRIPT_OFFSET_REPLAY",
+                    "Reconnect offset must not precede the last confirmed transcript end");
+        }
+
+        UUID sessionId = UUID.randomUUID();
+        try {
+            jdbc.update("INSERT INTO stream_sessions(id,meeting_id,provider,audio_offset_ms,started_at) VALUES (?,?,?,?,?)",
+                    sessionId, meetingId, "DEEPGRAM_POC", audioOffsetMs, OffsetDateTime.now(ZoneOffset.UTC));
+            jdbc.update("INSERT INTO active_deepgram_sessions(meeting_id,stream_session_id,request_id) VALUES (?,?,?)",
+                    meetingId, sessionId, requestId);
+        } catch (DataIntegrityViolationException conflict) {
+            throw new ApiException(HttpStatus.CONFLICT, "TRANSCRIPTION_ALREADY_ACTIVE",
+                    "A Deepgram transcription session is already active");
+        }
+        return sessionId;
+    }
+
+    @Transactional
+    public int recoverOrphanedDeepgramSessions() {
+        List<ActiveDeepgramClaim> claims = jdbc.query(
+                "SELECT meeting_id,stream_session_id,request_id FROM active_deepgram_sessions FOR UPDATE",
+                (rs, row) -> new ActiveDeepgramClaim(rs.getObject("meeting_id", UUID.class),
+                        rs.getObject("stream_session_id", UUID.class), rs.getObject("request_id", UUID.class)));
+        OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        for (ActiveDeepgramClaim claim : claims) {
+            jdbc.update("UPDATE stream_sessions SET ended_at=?,close_reason='APP_RESTART' WHERE id=? AND ended_at IS NULL",
+                    now, claim.streamSessionId());
+        }
+        // This runs before traffic while holding the process-lifetime database lock. It also repairs a crash
+        // between reservation and claim, and conservatively preserves any unlinked dispatched charge.
+        jdbc.update("""
+                UPDATE ai_usage_records
+                   SET state=CASE state WHEN 'RESERVED' THEN 'RELEASED' ELSE 'UNCERTAIN' END,updated_at=?
+                 WHERE provider='DEEPGRAM_POC' AND state IN ('RESERVED','DISPATCHED')
+                """, now);
+        jdbc.update("DELETE FROM active_deepgram_sessions");
+        return claims.size();
+    }
+
+    private record ActiveDeepgramClaim(UUID meetingId, UUID streamSessionId, UUID requestId) {}
+
+    public void setStreamProviderSessionId(UUID id, String providerSessionId) {
+        if (providerSessionId == null || providerSessionId.isBlank() || providerSessionId.length() > 200) {
+            throw new IllegalArgumentException("providerSessionId must contain 1 to 200 characters");
+        }
+        int changed = jdbc.update("UPDATE stream_sessions SET provider_session_id=? WHERE id=? AND (provider_session_id IS NULL OR provider_session_id=?)",
+                providerSessionId, id, providerSessionId);
+        if (changed != 1) {
+            throw new IllegalStateException("Stream provider session ID cannot be replaced");
+        }
+    }
+
+    @Transactional
     public void closeStreamSession(UUID id, String reason) {
         jdbc.update("UPDATE stream_sessions SET ended_at=?,close_reason=? WHERE id=? AND ended_at IS NULL",
                 OffsetDateTime.now(ZoneOffset.UTC), reason, id);
+        jdbc.update("DELETE FROM active_deepgram_sessions WHERE stream_session_id=?", id);
     }
 
     @Transactional

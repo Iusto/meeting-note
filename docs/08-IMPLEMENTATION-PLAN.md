@@ -23,7 +23,11 @@
 
 추가 연결 준비: Deepgram final의 화자별 원문 보존·세션별 event ID·offset 보정·다화자 일괄 저장과 승인 keyterm 전달을 구현했다. loopback 전용 PCM 세션에서 DB 작업을 분리하고 시간/전송량·예산 제한 및 종료 시 비용 처리를 연결했다. OpenAI는 외부 호출 중 DB 잠금을 유지하지 않고 응답 usage 정산 후 근거·revision·승인 용어를 검증해 요약/검토 대기 교정을 저장한다. 시간 초과·취소·불확실 청구도 시험한다. 모두 운영 경로에 연결하지 않은 준비 코드이며 실제 POC·장시간 처리의 완료로 계산하지 않는다.
 
-운영 연결 전 보강: 회의별 활성 STT 세션 단일화와 재연결 replay 중복 방지, 정리 단계 예외 시 원장/세션 각각의 best-effort 종료, 공급자 Metadata 요청 ID 기록이 남아 있다. 독립 구조 리뷰는 준비 코드 범위에서 WATCH이며 운영 활성화 승인이 아니다. 최신 서버 전체 149개 실행·실패/오류 0·Windows skip 2, 웹 15개와 lint·빌드를 통과했다.
+2026-10-21 연결 준비 보강: 회의별 활성 STT 세션 단일화·재연결 offset 검증·Metadata 요청 ID 기록, 정리 실패 시 원장/세션 독립 종료를 구현했다. 저장 timeout에서는 실제 worker 종료까지 claim을 유지한다. 선택적인 PostgreSQL 시작 복구는 프로세스 수명의 advisory lock 아래 남은 예약을 해제하고 전송 요청을 UNCERTAIN으로 보존한다. 기본 앱은 여전히 MOCK/LOCAL_RECORDING이다.
+
+독립 구조 재검토는 기존 차단 2건 해결 후 WATCH, 코드·보안 검토는 제한 범위 COMMENT이며 전체 승인으로 계산하지 않는다. 운영 활성화 전 잠금 연결 유실 보호와 이전 stream 감사 기록 정리·공급자 취소 경로 재검토가 남아 있다. 최신 시험 결과와 검토 공백은 [07](07-TEST-AND-EVAL.md)에 기록한다.
+
+GitHub `Iusto/meeting-note` 원격 저장은 연결 앱의 contents 쓰기 권한 오류(403)와 터미널 네트워크 제한으로 미완료다. 비밀정보를 제외한 로컬 Git 저장소를 생성했다. 유료 POC나 배포 이미지 변경은 실행하지 않았다.
 
 ## Phase 0 — 스캐폴딩·Mock (외부 과금 0원)
 - [x] `apps/web` React+TS+Vite, 기본 회의 목록/새 회의/라이브 화면 레이아웃.

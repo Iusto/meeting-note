@@ -15,6 +15,7 @@
 | `glossary_suggestions` | id, topic_id, candidate_json, state, source_meeting_id | AI 추천→승인 수동 |
 | `meetings` | id, title, topic_id, input_source, status, started_at, ended_at, revision | 최근 회의 인덱스 |
 | `stream_sessions` | id, meeting_id, provider, provider_session_id, audio_offset_ms, started_at, ended_at, close_reason | 재연결/비용 단위 |
+| `active_deepgram_sessions` | meeting_id, stream_session_id, request_id, claimed_at | 회의별 활성 POC 세션 1개. stream/request unique FK로 재시작 비용 대사 연결 |
 | `recordings` | id, meeting_id, state, path, sha256, bytes, duration_ms | 오디오 파일은 로컬에 저장 |
 | `recording_chunks` | id, recording_id, sequence_no, start_ms, end_ms, sha256, state | `(recording_id, sequence_no)` unique |
 | `speakers` | id, meeting_id, provider_label, display_name, review_state | `(meeting_id, provider_label)` unique |
@@ -29,6 +30,8 @@
 
 ## 데이터 정합성 규칙
 - 한 회의에서 `stream_sessions`가 여러 개일 수 있다(재연결). 이벤트의 기준 시간은 **회의 시작부터 누적된 audio offset**.
+- Deepgram POC 재연결 offset은 마지막 확정 전사의 끝보다 앞설 수 없다. 저장 작업이 시간 초과해도 실제 종료 전까지 활성 claim을 유지한다.
+- 선택 설정 `app.deepgram.startup-recovery-enabled=true`는 PostgreSQL 전용이다. 트래픽 수신 전 전용 연결의 session advisory lock을 획득해 프로세스 수명 동안 유지하며, 경쟁 인스턴스는 기동을 거부한다. 복구 트랜잭션에서 남은 POC 예약을 RELEASED, 전송 요청을 UNCERTAIN으로 바꾸고 연결된 stream/claim을 종료한다. 기본값은 비활성이며 운영 공급자 연결도 미활성이다. 잠금 연결 유실 감시와 V8 이전 종료되지 않은 stream 감사 기록 정리는 운영 활성화 전 남은 검토 항목이다.
 - `PARTIAL`은 DB에 항상 저장할 필요가 없음. `FINAL` 이벤트만 durable 기록하며 음성 chunk는 별도로 저장.
 - 같은 `provider_event_id`를 재전송해도 중복 INSERT가 발생하지 않도록 UPSERT/멱등.
 - `speaker_id`는 nullable. overlap은 여러 `transcript_segments`의 시간 범위 중복으로 표현 가능.
@@ -50,6 +53,7 @@
 5. `V5__create_offline_glossary_and_review.sql` — 공유 용어·별칭·주제 연결, 검토 교정 제안, 근거/revision snapshot을 보존하는 버전형 가상 요약.
 6. `V6__create_app_settings.sql` — 단일 사용자 예산·경고 기준·유료 작업 시간·보관 검토 주기와 revision.
 7. `V7__create_ai_usage_ledger.sql` — 공급자 독립 비용 원장. 예산 변경과 원장 갱신은 설정 행 잠금으로 직렬화한다. API 사용량 집계와 완료 녹음 집계는 각각 요청 예약 월·회의 시작 월(UTC)을 사용한다. 실제 공급자 호출은 아직 연결하지 않는다.
+8. `V8__guard_active_deepgram_sessions.sql` — 회의별 활성 POC 세션과 비용 요청의 연결을 보존한다.
 
 ## 보관 정책
 녹음, 임시 chunk, 로그, 전사/요약, 백업 각각의 보존·삭제 정책을 분리한다. 기본 보존기간은 사용자 설정 이전에는 강제 자동삭제하지 않으며, UI에서 용량과 삭제 대상을 알려준다.

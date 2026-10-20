@@ -1,23 +1,23 @@
 # 07. 테스트/성능/실측 계획
 
-## 현재 검증 상태 (2026-10-18~19)
+## 현재 검증 상태 (2026-10-18~21)
 
-유료 API 호출 **0회 / 0원**. 서버·웹 기본 검증은 18일, 재시작·4시간 재시험은 19일 결과다. 각 결과는 아래 시점과 범위의 증거이며, 실제 STT/LLM 품질이나 전체 MVP 완료를 뜻하지 않는다.
+유료 API 호출 **0회 / 0원**. 각 결과는 아래 시점과 범위의 증거이며, 실제 STT/LLM 품질이나 전체 MVP 완료를 뜻하지 않는다.
 
 | 범위 | 최근 확인 결과 | 재현 경로·한계 |
 |---|---|---|
-| 서버 전체 | 19일 18:48, 149개 실행·실패/오류 0·Windows 링크 권한 skip 2 | `apps/api`: Maven `test`; 실제 PostgreSQL 13개 포함. [DB 설정](../README.md#로컬-개발과-테스트) |
+| 서버 전체 | 21일 01:23, 158개 실행·실패/오류 0·Windows 링크 권한 skip 2 | `apps/api`: Maven `test`; 실제 PostgreSQL 15개 포함. [DB 설정](../README.md#로컬-개발과-테스트) |
 | OpenAI·Deepgram POC | 가짜 HTTP/WebSocket·주입 future 시험을 전체 서버 테스트에 포함 | PCM 전송량 제한·승인 keyterm·offset·다화자 저장·중복 방지·실패 후 녹음 상태 보존, OpenAI 교정/요약·usage 정산·timeout/cancel·예산 0·조작된 snapshot/patch 거부 검증. 운영 공급자 연결·실제 음성 품질·청구 미검증 |
 | 오프라인 평가·비용 계산 | Python 15개 통과 | [실행 안내](../scripts/README.md). CER/WER·용어 주석·화자 라벨 커버리지·입력 지연 백분위수, 명시적 단가의 36/48/60시간 계산. 합성 예제이며 실제 음성 품질·요금 실측이 아님 |
 | 비용 원장·예산 | H2 전용 10개와 실제 PostgreSQL 동시 예약·설정 변경·삭제 후 비용 보존·불확실 청구 대조·외부 트랜잭션 거절 통과 | 사용량 API의 null 실비·월 경계·경고/소진도 검증. 실제 공급자 요금 계산·연결은 별도 |
-| 서버 패키징·기동 | 16:12 이전 JAR 패키징 통과 | 당시 전체 116개 검증 후 생성; 운영 복원·재시작 시험에서 실제 PostgreSQL 연결 기동 확인. 18:48 소스의 운영 이미지 반영은 미실행 |
-| 웹 단위·정적 검사 | 15개, lint·타입 검사·빌드 통과 | `apps/web`: `npm test`, `npm run lint`, `npm run build` |
+| 서버 패키징·기동 | 21일 01:23 전체 시험 후 JAR 패키징 통과 | 로그 `.tools/session-recovery-full.log`, `.tools/session-recovery-package.log`. 운영 이미지 반영은 미실행 |
+| 웹 단위·정적 검사 | 21일 01:10, 15개, lint·타입 검사·빌드 통과 | `apps/web`: `npm test`, `npm run lint`, `npm run build` |
 | 브라우저 통합 | 14개 통과(27.0초) | [E2E 안내](../tests/e2e/README.md). 합성 마이크·저장 복구·비용 경고 포함 |
 | 저장 실패 | 브라우저 QuotaExceededError와 서버 청크/결합 IOException 회귀 통과 | 브라우저 자동 중지·명시적 누락 경고·재시도, 서버 DB 롤백 확인. 실제 디스크 포화 시험은 별도 |
 | 녹음 다운로드 확장자 | 19일 수정 후 녹음 관련 19개 실행·실패/오류 0·Windows 링크 skip 2 | `RecordingControllerIntegrationTest,RecordingStorageFailureIntegrationTest,RecordingStorageTest`. WebM/Ogg·codec 매개변수·대소문자·알 수 없는 형식의 `.bin` 유지와 원본 바이트/해시 검증. 수정 전 확장자 실패 4건 재현. 운영 API 이미지 재빌드 전에는 기존 `.bin` 응답 유지 |
 | 브라우저 quota 실험 | 별도 CDP/IndexedDB 시험 추가, 현재 Chrome 154에서 capability skip | 1byte 제한 적용 응답에도 실제 16MiB 쓰기를 허용했다. 강제 제한·복구 통과로 계산하지 않는다. 호스트 디스크 포화와도 별개 |
 | API 강제 재시작 | 최종 JAR로 별도 E2E 재검증 통과(20.0초) | 19일 시간 기준 수정 후 quota 시험과 함께 실행: 1통과·1skip(36.0초). 소유 API만 재시작, 새로고침 없는 재인증·청크 복구·해시/재생·IndexedDB 정리. 임시 DB·프로세스 정리 확인 |
-| 백업·복원 | 최종 JAR로 8개 실행·실패/오류 0·Windows 링크 skip 1(26.1초) | [운영 안내](../scripts/README.md). 원장 18개 필드·사용량 없는 청구 대조·삭제된 회의 비용·새 경로 복원과 앱 기동 포함 |
+| 백업·복원 | 21일 01:24 최종 JAR로 8개 실행·실패/오류 0·Windows 링크 skip 1(24.5초) | [운영 안내](../scripts/README.md). V8 포함 실제 PostgreSQL 복원·앱 기동. 원장 18개 필드·사용량 없는 청구 대조·삭제된 회의 비용·새 경로 복원 포함。로그 `.tools/session-recovery-backup.log` |
 | 합성 마이크 연속 녹음 | 19일 04:30, 실제 4시간 재시험 통과. 7,059청크·14,400,058ms·116,756,339bytes | 480개 상태 점검, 일시 업로드 장애 복구·최종 결합·다운로드/저장 파일 SHA-256·새로고침 후 재생 통과. 청크 순서·시간 구간 단절 0건. 실제 마이크 음질·음성 내용 무손실·외부 STT 연결은 별도 |
 | 데이터 격리 | 기존 앱 DB 회의 170개 유지, 이번 임시 DB·API/Web 프로세스 정리 완료 | 서버·운영·재시작·브라우저·장시간 시험은 별도 합성 DB 사용 |
 | Docker·원격 HTTPS | 19일 사용자 로그에서 api/web 빌드와 DB/API/web Healthy 확인. 배포 PC에서 로컬 HTTP·Tailscale HTTPS 루트 200, 미인증 `/api/v1/session` 각각 401 직접 확인. 사용자 휴대폰 로그인·녹음 재생 확인 | 표준 TLS 인증서 검증을 사용했다. 스크립트 가짜 명령 테스트 7개·기존 프록시 인증 시험 통과. 제어 named pipe 제한은 유지되며 실제 STT WSS는 미검증 |
@@ -26,7 +26,9 @@
 
 추가 통합 시험은 API 키를 사용하지 않았다. 다화자 final의 두 번째 DB 삽입을 실패시켜 전체 발언과 speaker가 롤백되는지 H2·실제 PostgreSQL에서 확인했다. final 이후 늦은 partial, 전사/승인 용어 변경 중 AI 지연 응답, 거절된 응답·잘못된 usage·예약 초과·무응답·호출자 취소도 포함했다. 서버 로그는 `.tools/ai-integration-full.log`에 있다. 웹 15개와 lint·타입 검사·빌드도 재통과했다.
 
-독립 구조 리뷰는 WATCH다. 운영 연결 전 활성 세션 단일화·재연결 중복 방지, cleanup 예외 시 원장/세션의 독립적인 종료 시도, 공급자 요청 ID 기록이 필요하다. 코드 리뷰의 중간 지적(다화자 부분 저장·final 후 partial)은 수정하고 회귀 시험을 통과했다. 5시간 사용량 94%에서 새 작업과 남은 리뷰를 중단했으며 코드 리뷰 최종 판정은 미수신이다. 두 독립 리뷰가 모두 끝나지 않았으므로 전체 리뷰 승인·전체 서비스 완료·운영 활성화 승인으로 해석하지 않는다.
+21일 보강에서는 활성 세션 단일화·재연결 offset·Metadata ID·정리 실패 처리를 추가했다. 구조 리뷰에서 지적한 재시작 후 claim/예약 잔류와 저장 timeout 후 늦은 쓰기 충돌도 수정했다. 선택적인 시작 복구의 PostgreSQL session advisory lock 경쟁, linked/unlinked RESERVED/DISPATCHED 대사, interrupt를 무시한 저장 worker 종료 전 재연결 차단을 포함해 관련 40개 시험을 01:22 KST에 통과했다. 초기 시험의 FK 삭제 순서·예산 초기화 오류를 수정했고 재시험에서 실패/오류가 없었다.
+
+독립 구조 재검토는 기존 차단 2건 해결 후 WATCH다. 잠금 연결 유실 보호와 V8 이전 종료되지 않은 stream 감사 기록 정리는 남아 있다. 코드·보안 검토는 제한 범위 COMMENT로 추가 CRITICAL/HIGH를 확인하지 못했으나, 진단 중 사용량 제한으로 중단했고 후속 수정 전체를 재검토하지 못했다. 정적 분석 최종 결과도 확보하지 못해 전체 승인으로 계산하지 않는다. 실제 공급자 활성화 전 취소·재시작·시간 제한을 다시 검토해야 한다.
 
 사용자가 휴대폰의 Tailscale HTTPS 로그인과 실제 녹음 파일 재생을 확인했다. `.bin` 다운로드는 서버 응답의 고정 파일명 문제로 확인해 녹음 MIME에 맞게 `.webm`/`.ogg`로 수정했다. 저장 파일·인코딩은 변경하지 않았다. 추가 매개변수 시험의 로그인 제한 충돌은 테스트 준비에서 기존 SessionService를 사용해 해결했고, 파일 시험의 임시 경로는 Surefire `argLine`으로 작업 폴더를 지정했다. 유료 호출은 없으며 운영 반영은 남아 있다.
 
