@@ -1,4 +1,4 @@
-# Offline tools
+# Local operations and POC tools
 
 ## Windows private deployment
 
@@ -15,6 +15,26 @@ The printed HTTPS address still needs login/microphone verification from another
 ```powershell
 python -m unittest discover -s tests/ops -p test_start_private.py -v
 ```
+
+## Bounded provider POC
+
+These standalone commands do not start Spring or enable AI in the application. They default to **dry run**: validate input, prices, reservation and output, without reading a provider key or making a network request. Build the JAR first (`apps/api`: `./mvnw package` or `.\mvnw.cmd package`). Output parents must exist and output files must be new.
+
+From the repository root, an OpenAI preflight using the committed fictional transcript:
+
+```powershell
+powershell.exe -NoProfile -File scripts/run-openai-poc.ps1 --input examples/openai-poc-synthetic.json --output .tools/openai-preflight.json --timeout-seconds 30 --output-token-cap 1000 --max-usd 0.05 --input-usd-per-million 2 --output-usd-per-million 10 --price-version official-2026-10-21
+```
+
+Deepgram requires approved fictional speech encoded as **raw signed little-endian PCM16, 16 kHz, mono**, with `.pcm`/`.raw` extension. A downloaded WebM/Ogg or a WAV container cannot be renamed to PCM. The following is also only preflight; the inclusive rate uses the regular-price scenario in [cost policy](../docs/09-COST.md).
+
+```powershell
+powershell.exe -NoProfile -File scripts/run-deepgram-poc.ps1 --input C:\private\synthetic.pcm --output .tools/deepgram-preflight.json --duration-seconds 300 --max-usd 0.06 --usd-per-minute 0.011 --price-version regular-2026-10-21
+```
+
+Actual execution additionally requires `--execute`, `--synthetic-approved` and process `PAID_API_TESTS_ENABLED=true`, plus the matching process environment key (`OPENAI_API_KEY` or `DEEPGRAM_API_KEY`). Do not put keys in arguments or reports. Deepgram comparisons can add `--diarization` and repeated `--keyterm VALUE` with `--keyterms-approved`; explicitly supply a rate that includes the selected options. Recheck official rates before any paid run.
+
+Limits and reservations apply to one invocation, separately from the application DB's monthly ledger. Multiple comparison runs share the operator-approved total budget; do not treat each invocation as a fresh allowance. Reports distinguish estimates from unknown supplier charges and never declare GO. Deepgram receive timestamps are not automatically end-to-end caption latency or CER/DER: human alignment, reference audio and the [quality gate](../docs/07-TEST-AND-EVAL.md#품질-게이트-1--nova-3-poc-phase-1) remain required. The agent environment currently cannot reach either API host on port 443; a successful dry run does not establish provider connectivity.
 
 ## Backup and restore
 

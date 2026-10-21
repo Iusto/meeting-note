@@ -68,7 +68,7 @@ $env:APP_TEST_DATABASE_PASSWORD='<테스트 DB 비밀번호>'
 .\mvnw.cmd test
 ```
 
-브라우저 시험에는 별도 테스트 앱·DB를 사용한다. [E2E 실행 안내](tests/e2e/README.md), [백업·복원 안내](scripts/README.md), [검증 결과와 한계](docs/07-TEST-AND-EVAL.md)를 참고한다.
+브라우저 시험에는 별도 테스트 앱·DB를 사용한다. [E2E 실행 안내](tests/e2e/README.md), [백업·복원과 기본 과금 없는 POC 사전 점검](scripts/README.md), [검증 결과와 한계](docs/07-TEST-AND-EVAL.md)를 참고한다.
 
 ## 문서
 

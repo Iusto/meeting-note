@@ -31,7 +31,7 @@
 ## 데이터 정합성 규칙
 - 한 회의에서 `stream_sessions`가 여러 개일 수 있다(재연결). 이벤트의 기준 시간은 **회의 시작부터 누적된 audio offset**.
 - Deepgram POC 재연결 offset은 마지막 확정 전사의 끝보다 앞설 수 없다. 저장 작업이 시간 초과해도 실제 종료 전까지 활성 claim을 유지한다.
-- 선택 설정 `app.deepgram.startup-recovery-enabled=true`는 PostgreSQL 전용이다. 트래픽 수신 전 전용 연결의 session advisory lock을 획득해 프로세스 수명 동안 유지하며, 경쟁 인스턴스는 기동을 거부한다. 복구 트랜잭션에서 남은 POC 예약을 RELEASED, 전송 요청을 UNCERTAIN으로 바꾸고 연결된 stream/claim을 종료한다. 기본값은 비활성이며 운영 공급자 연결도 미활성이다. 잠금 연결 유실 감시와 V8 이전 종료되지 않은 stream 감사 기록 정리는 운영 활성화 전 남은 검토 항목이다.
+- 선택 설정 `app.deepgram.startup-recovery-enabled=true`는 PostgreSQL 전용이다. 트래픽 수신 전 전용 연결의 session advisory lock을 획득해 프로세스 수명 동안 유지하며, 경쟁 인스턴스는 기동을 거부한다. 복구 트랜잭션에서 남은 POC 예약을 RELEASED, 전송 요청을 UNCERTAIN으로 바꾸고 연결된 stream/claim 및 V8 이전의 미종료 POC stream을 종료한다. 기본값은 비활성이며 운영 공급자 연결도 미활성이다. 잠금 연결 유실 보호는 운영 활성화 전 남은 검토 항목이다.
 - `PARTIAL`은 DB에 항상 저장할 필요가 없음. `FINAL` 이벤트만 durable 기록하며 음성 chunk는 별도로 저장.
 - 같은 `provider_event_id`를 재전송해도 중복 INSERT가 발생하지 않도록 UPSERT/멱등.
 - `speaker_id`는 nullable. overlap은 여러 `transcript_segments`의 시간 범위 중복으로 표현 가능.

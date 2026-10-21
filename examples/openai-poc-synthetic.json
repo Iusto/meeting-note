@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "measurementOrigin": "synthetic/offline",
+  "segments": [
+    {
+      "id": "00000000-0000-0000-0000-000000000001",
+      "revision": 0,
+      "userLocked": false,
+      "displayText": "The synthetic team approved the offline validation plan."
+    },
+    {
+      "id": "00000000-0000-0000-0000-000000000002",
+      "revision": 0,
+      "userLocked": false,
+      "displayText": "Test Owner will review the synthetic report by 2026-10-31."
+    }
+  ]
+}

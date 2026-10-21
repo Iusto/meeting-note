@@ -2,6 +2,8 @@
 
 > 최초 확인: 2026-10-15. 추가 확인한 항목은 표에 2026-10-17로 표시했다. API 사용 직전 지원범위·요금·파라미터를 **재확인**한다. 아래 링크는 구현 근거이며 회의 품질 실측이 아니다.
 
+2026-10-21 재확인: 아래 모델·언어·diarization·keyterm·가격, OpenAI 모델·Responses·Structured Outputs 페이지에서 기존 계약을 확인했다. `gpt-6.1-sol`, `reasoning.effort:low`, `service_tier:default`를 유지한다. 공개 지원 정보는 계정별 접근 권한·한국어 정확도·실청구 검증을 대신하지 않는다.
+
 | 항목 | 공식 링크 | 확인 사항 |
 |---|---|---|
 | Deepgram 모델·언어 | https://developers.deepgram.com/docs/models-languages-overview | Nova-3가 한국어(`ko`, `ko-KR`) 및 회의/스트리밍 지원 |

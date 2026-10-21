@@ -275,6 +275,25 @@ class DeepgramMeetingPocIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM active_deepgram_sessions", Integer.class)).isZero();
     }
 
+    @Test void startupRecoveryClosesLegacyPocStreamsWithoutChangingCompletedOrOtherProviders() {
+        UUID legacy = meetings.createStreamSession(meetingId, "DEEPGRAM_POC", 0);
+        UUID completed = meetings.createStreamSession(meetingId, "DEEPGRAM_POC", 0);
+        meetings.closeStreamSession(completed, "COMPLETED");
+        UUID fakeSession = meetings.createStreamSession(meetingId, "FAKE", 0);
+
+        assertThat(meetings.recoverOrphanedDeepgramSessions()).isZero();
+
+        assertThat(jdbc.queryForObject("SELECT close_reason FROM stream_sessions WHERE id=?", String.class, legacy))
+                .isEqualTo("APP_RESTART");
+        assertThat(jdbc.queryForObject("SELECT ended_at IS NOT NULL FROM stream_sessions WHERE id=?", Boolean.class, legacy))
+                .isTrue();
+        assertThat(jdbc.queryForObject("SELECT close_reason FROM stream_sessions WHERE id=?", String.class, completed))
+                .isEqualTo("COMPLETED");
+        assertThat(jdbc.queryForObject("SELECT ended_at IS NULL FROM stream_sessions WHERE id=?", Boolean.class, fakeSession))
+                .isTrue();
+        assertThat(meetings.recoverOrphanedDeepgramSessions()).isZero();
+    }
+
     @Test void timedOutWriterKeepsClaimUntilItActuallyStopsThenAllowsSafeReconnect() throws Exception {
         CountDownLatch writerEntered = new CountDownLatch(1);
         CountDownLatch releaseWriter = new CountDownLatch(1);

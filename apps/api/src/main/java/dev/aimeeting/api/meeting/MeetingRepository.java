@@ -196,6 +196,9 @@ public class MeetingRepository {
             jdbc.update("UPDATE stream_sessions SET ended_at=?,close_reason='APP_RESTART' WHERE id=? AND ended_at IS NULL",
                     now, claim.streamSessionId());
         }
+        // Older POC streams predate V8 and have no durable claim. Close their audit rows as well.
+        jdbc.update("UPDATE stream_sessions SET ended_at=?,close_reason='APP_RESTART' WHERE provider='DEEPGRAM_POC' AND ended_at IS NULL",
+                now);
         // This runs before traffic while holding the process-lifetime database lock. It also repairs a crash
         // between reservation and claim, and conservatively preserves any unlinked dispatched charge.
         jdbc.update("""
