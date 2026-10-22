@@ -22,6 +22,9 @@
 | OpenAI 데이터 사용 | https://developers.openai.com/api/docs/guides/your-data | API 입력의 학습/보관 정책 공식 확인 필요 |
 | OpenAI 모델 종료 | https://developers.openai.com/api/docs/deprecations | 종료 예정 모델과 교체 권고 확인 |
 | OpenAI 가격 | https://developers.openai.com/api/docs/pricing | Sol 가격/캐시/서비스 티어 등 확인 |
+| PostgreSQL 15 잠금 조회 | https://www.postgresql.org/docs/15/view-pg-locks.html | 2026-10-22 확인: bigint advisory key의 classid/objid·objsubid=1, 현재 DB·backend·ExclusiveLock 일치 검사 |
+| PostgreSQL 15 관리 함수 | https://www.postgresql.org/docs/15/functions-admin.html | 2026-10-22 확인: session advisory lock 해제와 pg_terminate_backend timeout; 격리 시험 backend만 종료 |
+| JDBC Connection·pool | [Connection](https://docs.oracle.com/en/java/javase/21/docs/api/java.sql/java/sql/Connection.html), [PooledConnection](https://docs.oracle.com/en/java/javase/21/docs/api/java.sql/javax/sql/PooledConnection.html) | network timeout·abort와 물리 연결 종료; pool 논리 close만으로 세션 잠금 해제를 보장하지 않음 |
 
 ## 사실/가정 구분
 - **공식 확인:** Nova-3 한국어 언어코드, diarization 기능, keyterm 가능, 공개 가격, Sol 모델 ID/요금.

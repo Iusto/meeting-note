@@ -46,5 +46,10 @@ gpt-6.1-sol]
 - 장시간 녹음 포맷/코덱과 timestamp 드리프트는 별도 검증 필요.
 - PC 오디오(Teams/Zoom) 캡처는 브라우저/OS 권한 제약으로 **MVP 범위 밖**, 대면 마이크부터.
 
+## 공급자 소유권 보호 (연결 준비 코드)
+선택적인 `DeepgramStartupRecovery`는 전용 PostgreSQL 세션의 advisory lock을 감시하고 예약·전송·연결 직전에 소유권을 재확인한다. 잠금·연결·backend PID가 바뀌면 해당 인스턴스의 guarded STT만 재시작 전까지 차단한다. 활성 STT는 `OWNERSHIP_LOST`로 종료하고 전송된 비용은 `UNCERTAIN`으로 남긴다. 회의와 로컬 녹음은 계속된다.
+
+감시 주기는 기본 1초, JDBC query/network 제한은 2초/3초다. 이는 장애 감지와 로컬 차단이며 DB 쓰기와 원자적인 소유권 보장은 아니다. 이미 진행 중인 저장이나 후속 인스턴스와의 경합은 트랜잭션 안의 소유권 검증으로 추가 차단해야 한다. 현재 guarded 경로는 loopback POC뿐이며, 운영 활성화에는 이 보호와 실제 한국어 품질 게이트가 필요하다.
+
 ## 추후 확장시 고려, 지금은 배제
 Redis, Kafka, K8s, 벡터 DB, 로컬 pyannote, GPU 서버, WebRTC 별도 SFU, 테넌트·결제 시스템. 공급자 변경이 실제 필요할 때만 second adapter 추가.

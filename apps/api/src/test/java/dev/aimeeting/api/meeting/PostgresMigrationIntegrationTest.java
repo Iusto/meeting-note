@@ -22,12 +22,18 @@ import dev.aimeeting.api.web.ApiException;
 import dev.aimeeting.api.recording.RecordingService;
 import dev.aimeeting.api.storage.RecordingStorage;
 import dev.aimeeting.api.provider.deepgram.DeepgramStartupRecovery;
+import dev.aimeeting.api.provider.deepgram.DeepgramMeetingPoc;
+import dev.aimeeting.api.provider.deepgram.PocLimits;
+import dev.aimeeting.api.topic.TopicRepository;
+import java.net.URI;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.util.HexFormat;
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
+import java.time.Duration;
 import java.time.YearMonth;
+import java.util.concurrent.atomic.AtomicInteger;
 import javax.sql.DataSource;
 import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
@@ -62,6 +68,7 @@ class PostgresMigrationIntegrationTest {
     @Autowired PlatformTransactionManager transactionManager;
     @Autowired CostLedgerService ledger;
     @Autowired DataSource dataSource;
+    @Autowired TopicRepository topics;
 
     @BeforeEach
     void restoreIndependentOperationalState() {
@@ -196,6 +203,81 @@ class PostgresMigrationIntegrationTest {
             holder.destroy();
             contender.destroy();
             successor.destroy();
+        }
+    }
+
+    @Test
+    void productionStartupLockLossIsStickyAndBlocksDispatchBeforeSuccessorRecovery() throws Exception {
+        DeepgramStartupRecovery holder = new DeepgramStartupRecovery(dataSource, meetings);
+        DeepgramStartupRecovery successor = new DeepgramStartupRecovery(dataSource, meetings);
+        Meeting meeting = null;
+        AtomicInteger ownershipLost = new AtomicInteger();
+        UUID dispatchedRequest = UUID.randomUUID();
+        UUID dispatchedSession = null;
+        holder.start();
+        try {
+            holder.onOwnershipLost(ownershipLost::incrementAndGet);
+            meeting = meetings.create("PostgreSQL forced lock loss " + UUID.randomUUID());
+            meetings.start(meeting.id());
+            ledger.reserve(dispatchedRequest, deepgramRequest(meeting.id(), "1"));
+            dispatchedSession = meetings.createDeepgramStreamSession(meeting.id(), 0, dispatchedRequest);
+            ledger.startDispatch(dispatchedRequest);
+
+            long lockKey = 0x41494D454554494EL;
+            Integer lockBackendPid = jdbc.queryForObject("""
+                    SELECT pid FROM pg_locks
+                     WHERE locktype='advisory' AND granted AND mode='ExclusiveLock' AND objsubid=1
+                       AND database=(SELECT oid FROM pg_database WHERE datname=current_database())
+                       AND classid=((?::bigint >> 32) & 4294967295)::oid
+                       AND objid=(?::bigint & 4294967295)::oid
+                    """, Integer.class, lockKey, lockKey);
+            assertThat(lockBackendPid).isNotNull();
+            assertThat(jdbc.queryForObject("SELECT pg_terminate_backend(?, 1000)", Boolean.class, lockBackendPid))
+                    .isTrue();
+
+            long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while ((holder.isOwned() || ownershipLost.get() != 1) && System.nanoTime() < deadline) {
+                Thread.sleep(25);
+            }
+            assertThat(holder.isOwned()).isFalse();
+            assertThat(ownershipLost).hasValue(1);
+            assertThatThrownBy(holder::verifyOwnership).isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("restart required");
+            assertThatThrownBy(holder::start).isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("cannot be restarted");
+            assertThat(ownershipLost).hasValue(1);
+
+            long usageBefore = jdbc.queryForObject("SELECT COUNT(*) FROM ai_usage_records", Long.class);
+            long sessionsBefore = jdbc.queryForObject("SELECT COUNT(*) FROM stream_sessions", Long.class);
+            UUID rejectedRequest = UUID.randomUUID();
+            Meeting startedMeeting = meeting;
+            PocLimits limits = new PocLimits(Duration.ofSeconds(1), new BigDecimal("0.01"),
+                    new BigDecimal("0.01"));
+            assertThatThrownBy(() -> DeepgramMeetingPoc.openLoopback(
+                    URI.create("ws://127.0.0.1:1/v1/listen"), rejectedRequest, startedMeeting.id(), 0,
+                    false, limits, "synthetic-rates", meetings, topics, ledger, ignored -> {}, holder))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("restart required");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ai_usage_records", Long.class)).isEqualTo(usageBefore);
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM stream_sessions", Long.class)).isEqualTo(sessionsBefore);
+            assertThat(meetings.find(meeting.id()).status()).isEqualTo("STARTED");
+
+            assertThat(successor.start()).isEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT state FROM ai_usage_records WHERE id=?",
+                    String.class, dispatchedRequest)).isEqualTo("UNCERTAIN");
+            assertThat(jdbc.queryForObject("SELECT close_reason FROM stream_sessions WHERE id=?",
+                    String.class, dispatchedSession)).isEqualTo("APP_RESTART");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM active_deepgram_sessions WHERE request_id=?",
+                    Integer.class, dispatchedRequest)).isZero();
+        } finally {
+            try {
+                if (dispatchedSession != null) meetings.closeStreamSession(dispatchedSession, "TEST_CLEANUP");
+                jdbc.update("DELETE FROM ai_usage_records WHERE id=?", dispatchedRequest);
+                if (meeting != null) meetings.stop(meeting.id());
+            } finally {
+                holder.destroy();
+                successor.destroy();
+            }
         }
     }
 

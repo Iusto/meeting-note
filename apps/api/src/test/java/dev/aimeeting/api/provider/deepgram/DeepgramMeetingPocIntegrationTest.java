@@ -5,6 +5,9 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.doNothing;
 
 import dev.aimeeting.api.meeting.MeetingRepository;
 import dev.aimeeting.api.provider.SpeechEvent;
@@ -22,6 +25,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.CountDownLatch;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -347,6 +352,137 @@ class DeepgramMeetingPocIntegrationTest {
         } finally {
             releaseWriter.countDown();
         }
+    }
+
+    @Test void ownershipFailureRejectsBeforeAnyReservationOrProviderConnection() {
+        DeepgramStartupRecovery recovery = mock(DeepgramStartupRecovery.class);
+        doThrow(new IllegalStateException("ownership unavailable")).when(recovery).verifyOwnership();
+
+        assertThatThrownBy(() -> DeepgramMeetingPoc.openLoopback(endpoint(), requestId, meetingId, 0, true,
+                limits(Duration.ofSeconds(10)), "synthetic-rates", meetings, topics, ledger, events::add, recovery))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ai_usage_records", Integer.class)).isZero();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM active_deepgram_sessions", Integer.class)).isZero();
+        assertThat(fake.connections).isEmpty();
+        assertThat(meetings.find(meetingId).status()).isEqualTo("STARTED");
+    }
+
+    @Test void ownershipLostDuringRegistrationReleasesUndispatchedReservation() throws Exception {
+        DeepgramStartupRecovery recovery = mock(DeepgramStartupRecovery.class);
+        doAnswer(invocation -> {
+            invocation.<Runnable>getArgument(0).run();
+            return (Runnable) () -> {};
+        }).when(recovery).onOwnershipLost(any(Runnable.class));
+        doNothing().doThrow(new IllegalStateException("ownership unavailable"))
+                .when(recovery).verifyOwnership();
+
+        var opening = DeepgramMeetingPoc.openLoopback(endpoint(), requestId, meetingId, 0, true,
+                limits(Duration.ofSeconds(10)), "synthetic-rates", meetings, topics, ledger, events::add, recovery);
+
+        assertThatThrownBy(() -> opening.get(5, TimeUnit.SECONDS)).hasCauseInstanceOf(IllegalStateException.class);
+        assertThat(state()).isEqualTo("RELEASED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM active_deepgram_sessions", Integer.class)).isZero();
+        assertThat(fake.connections).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT close_reason FROM stream_sessions WHERE meeting_id=? AND provider='DEEPGRAM_POC'",
+                String.class, meetingId)).isEqualTo("OWNERSHIP_LOST");
+    }
+
+    @Test void ownershipProbeBeforeTransportPreservesDispatchedUsageAsUncertain() throws Exception {
+        AtomicReference<Runnable> loss = new AtomicReference<>();
+        DeepgramStartupRecovery recovery = guard(loss);
+        AtomicInteger probes = new AtomicInteger();
+        doAnswer(invocation -> {
+            if (probes.incrementAndGet() == 3) {
+                loss.get().run();
+                throw new IllegalStateException("ownership unavailable");
+            }
+            return null;
+        }).when(recovery).verifyOwnership();
+
+        var opening = DeepgramMeetingPoc.openLoopback(endpoint(), requestId, meetingId, 0, true,
+                limits(Duration.ofSeconds(10)), "synthetic-rates", meetings, topics, ledger, events::add, recovery);
+
+        assertThatThrownBy(() -> opening.get(5, TimeUnit.SECONDS)).hasCauseInstanceOf(IllegalStateException.class);
+        assertThat(state()).isEqualTo("UNCERTAIN");
+        assertThat(fake.connections).isEmpty();
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM active_deepgram_sessions", Integer.class)).isZero();
+        assertThat(meetings.find(meetingId).status()).isEqualTo("STARTED");
+    }
+
+    @Test void ownershipLossClosesOnlyTranscriptionAndDropsAWriterResumingAfterLoss() throws Exception {
+        meetings.insertFinal(meetingId, "prior-confirmed", 1, 0, 500, "original preserved", null);
+        AtomicReference<Runnable> loss = new AtomicReference<>();
+        DeepgramStartupRecovery recovery = guard(loss);
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        DeepgramMeetingPoc.PersistenceHook blocked = message -> {
+            if (!(message instanceof DeepgramMessage.Results result) || !result.finalResult()) return;
+            entered.countDown();
+            try {
+                release.await();
+            } catch (InterruptedException failure) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(failure);
+            }
+        };
+        var opening = DeepgramMeetingPoc.openLoopback(endpoint(), requestId, meetingId, 500, true,
+                limits(Duration.ofSeconds(10)), "synthetic-rates", meetings, topics, ledger, events::add,
+                meetings::closeStreamSession, blocked, recovery);
+        try (var poc = opening.get(5, TimeUnit.SECONDS)) {
+            server().sendMessage(new TextMessage(result(true)));
+            assertThat(entered.await(5, TimeUnit.SECONDS)).isTrue();
+            loss.get().run();
+            release.countDown();
+
+            assertThat(poc.completion().get(5, TimeUnit.SECONDS)).isEqualTo(DeepgramPocSession.StopReason.OWNERSHIP_LOST);
+            assertThat(state()).isEqualTo("UNCERTAIN");
+            assertThat(meetings.transcript(meetingId)).singleElement()
+                    .satisfies(segment -> assertThat(segment.originalText()).isEqualTo("original preserved"));
+            assertThat(meetings.find(meetingId).status()).isEqualTo("STARTED");
+            assertThat(jdbc.queryForObject("SELECT close_reason FROM stream_sessions WHERE id=?", String.class,
+                    poc.streamSessionId())).isEqualTo("OWNERSHIP_LOST");
+            assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM active_deepgram_sessions", Integer.class)).isZero();
+            assertThat(poc.sendAudio(new byte[640])).isCompletedExceptionally();
+        } finally {
+            release.countDown();
+        }
+    }
+
+    @Test void ownershipLossBeforeReadyPublicationFailsOpening() throws Exception {
+        AtomicReference<Runnable> loss = new AtomicReference<>();
+        DeepgramStartupRecovery recovery = guard(loss);
+        var connected = new CompletableFuture<DeepgramPocSession>();
+        DeepgramPocSession transport = mock(DeepgramPocSession.class);
+        doAnswer(invocation -> {
+            loss.get().run();
+            return CompletableFuture.completedFuture(DeepgramPocSession.StopReason.OWNERSHIP_LOST);
+        }).when(transport).completion();
+        try (var connector = org.mockito.Mockito.mockStatic(DeepgramPocSession.class)) {
+            connector.when(() -> DeepgramPocSession.connectLoopback(any(URI.class), any(DeepgramOptions.class),
+                    any(PocLimits.class), any())).thenReturn(connected);
+            var opening = DeepgramMeetingPoc.openLoopback(endpoint(), requestId, meetingId, 0, true,
+                    limits(Duration.ofSeconds(10)), "synthetic-rates", meetings, topics, ledger, events::add, recovery);
+            connected.complete(transport);
+
+            assertThatThrownBy(() -> opening.get(5, TimeUnit.SECONDS)).hasCauseInstanceOf(IllegalStateException.class);
+            awaitNoActiveClaim();
+            // Claim closure precedes asynchronous ledger reconciliation; wait for both cleanup stages.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (!"UNCERTAIN".equals(state()) && System.nanoTime() < deadline) Thread.sleep(10);
+            assertThat(state()).isEqualTo("UNCERTAIN");
+            assertThat(fake.connections).isEmpty();
+            assertThat(meetings.find(meetingId).status()).isEqualTo("STARTED");
+        }
+    }
+
+    private DeepgramStartupRecovery guard(AtomicReference<Runnable> loss) {
+        DeepgramStartupRecovery recovery = mock(DeepgramStartupRecovery.class);
+        doAnswer(invocation -> {
+            loss.set(invocation.getArgument(0));
+            return (Runnable) () -> loss.set(null);
+        }).when(recovery).onOwnershipLost(any(Runnable.class));
+        return recovery;
     }
 
     private CompletableFuture<DeepgramMeetingPoc> open(Duration duration, long offset) {

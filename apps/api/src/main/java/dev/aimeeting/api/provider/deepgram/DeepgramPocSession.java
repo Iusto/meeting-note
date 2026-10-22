@@ -35,6 +35,7 @@ public final class DeepgramPocSession implements WebSocket.Listener, AutoCloseab
     public enum StopReason {
         COMPLETED,
         USER_STOP,
+        OWNERSHIP_LOST,
         TIME_LIMIT,
         CONNECT_FAILED,
         SEND_FAILED,
@@ -257,6 +258,10 @@ public final class DeepgramPocSession implements WebSocket.Listener, AutoCloseab
         terminate(StopReason.USER_STOP);
     }
 
+    void ownershipLost() {
+        terminate(StopReason.OWNERSHIP_LOST);
+    }
+
     @Override
     public void onOpen(WebSocket webSocket) {
         webSocket.request(1);
@@ -475,23 +480,23 @@ public final class DeepgramPocSession implements WebSocket.Listener, AutoCloseab
             cancel(finalizeTask);
         }
         if (opening != null && !opening.isDone()) {
-            opening.cancel(true);
+            attempt(() -> opening.cancel(true));
         }
         if (webSocket != null) {
-            webSocket.abort();
+            attempt(webSocket::abort);
         }
         for (Outbound pending : abandoned) {
             if (pending.result != null) {
-                pending.result.completeExceptionally(sanitized("Deepgram session stopped"));
+                attempt(() -> pending.result.completeExceptionally(sanitized("Deepgram session stopped")));
             }
         }
         completion.complete(reason);
         completeFinishFromStopReason();
         if (httpClient != null) {
-            httpClient.shutdownNow();
+            attempt(httpClient::shutdownNow);
         }
-        scheduler.shutdownNow();
-        httpExecutor.shutdownNow();
+        attempt(scheduler::shutdownNow);
+        attempt(httpExecutor::shutdownNow);
     }
 
     private void completeFinishFromStopReason() {
@@ -505,7 +510,15 @@ public final class DeepgramPocSession implements WebSocket.Listener, AutoCloseab
 
     private static void cancel(ScheduledFuture<?> task) {
         if (task != null) {
-            task.cancel(false);
+            attempt(() -> task.cancel(false));
+        }
+    }
+
+    private static void attempt(Runnable action) {
+        try {
+            action.run();
+        } catch (RuntimeException ignored) {
+            // Every teardown action is best-effort; one broken resource must not block the remaining cleanup.
         }
     }
 

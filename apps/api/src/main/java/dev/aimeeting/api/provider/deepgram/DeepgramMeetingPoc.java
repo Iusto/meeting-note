@@ -50,11 +50,14 @@ public final class DeepgramMeetingPoc implements AutoCloseable {
     private final DeepgramTranscriptBridge transcript;
     private final ThreadPoolExecutor persistence;
     private final AtomicBoolean failed = new AtomicBoolean();
+    private final AtomicBoolean ownershipLost = new AtomicBoolean();
     private final AtomicBoolean cleanupStarted = new AtomicBoolean();
     private final AtomicBoolean sessionCloseStarted = new AtomicBoolean();
     private final CompletableFuture<DeepgramPocSession.StopReason> completion = new CompletableFuture<>();
     private final long maximumBytes;
     private volatile DeepgramPocSession transport;
+    private volatile CompletableFuture<DeepgramPocSession> connecting;
+    private volatile Runnable unregisterOwnership = () -> {};
     private long submittedBytes;
     private boolean closing;
 
@@ -79,6 +82,7 @@ public final class DeepgramMeetingPoc implements AutoCloseable {
                     return thread;
                 }, new ThreadPoolExecutor.AbortPolicy());
         this.transcript = new DeepgramTranscriptBridge(meetingId, sessionId, audioOffsetMs, meetings, events);
+        completion.whenComplete((value, failure) -> unregisterOwnership.run());
     }
 
     public static CompletableFuture<DeepgramMeetingPoc> openLoopback(
@@ -87,6 +91,16 @@ public final class DeepgramMeetingPoc implements AutoCloseable {
             CostLedgerService ledger, Consumer<SpeechEvent> events) {
         return openLoopback(endpoint, requestId, meetingId, audioOffsetMs, diarization, limits, priceVersion,
                 meetings, topics, ledger, events, meetings::closeStreamSession, ignored -> {});
+    }
+
+    /** Guarded rehearsal only; this does not enable a real provider or a browser relay. */
+    public static CompletableFuture<DeepgramMeetingPoc> openLoopback(
+            URI endpoint, UUID requestId, UUID meetingId, long audioOffsetMs, boolean diarization,
+            PocLimits limits, String priceVersion, MeetingRepository meetings, TopicRepository topics,
+            CostLedgerService ledger, Consumer<SpeechEvent> events, DeepgramStartupRecovery recovery) {
+        return openLoopback(endpoint, requestId, meetingId, audioOffsetMs, diarization, limits, priceVersion,
+                meetings, topics, ledger, events, meetings::closeStreamSession, ignored -> {},
+                Objects.requireNonNull(recovery));
     }
 
     static CompletableFuture<DeepgramMeetingPoc> openLoopback(
@@ -102,12 +116,22 @@ public final class DeepgramMeetingPoc implements AutoCloseable {
             PocLimits limits, String priceVersion, MeetingRepository meetings, TopicRepository topics,
             CostLedgerService ledger, Consumer<SpeechEvent> events, SessionCloser sessionCloser,
             PersistenceHook persistenceHook) {
+        return openLoopback(endpoint, requestId, meetingId, audioOffsetMs, diarization, limits, priceVersion,
+                meetings, topics, ledger, events, sessionCloser, persistenceHook, null);
+    }
+
+    static CompletableFuture<DeepgramMeetingPoc> openLoopback(
+            URI endpoint, UUID requestId, UUID meetingId, long audioOffsetMs, boolean diarization,
+            PocLimits limits, String priceVersion, MeetingRepository meetings, TopicRepository topics,
+            CostLedgerService ledger, Consumer<SpeechEvent> events, SessionCloser sessionCloser,
+            PersistenceHook persistenceHook, DeepgramStartupRecovery recovery) {
         // Reject remote endpoints before any ledger mutation or network operation.
         DeepgramPocSession.validateLoopbackEndpoint(endpoint);
         Objects.requireNonNull(requestId);
         Objects.requireNonNull(limits);
         Objects.requireNonNull(events);
         if (audioOffsetMs < 0) throw new IllegalArgumentException("Invalid audio offset");
+        if (recovery != null) recovery.verifyOwnership();
         var meeting = meetings.find(meetingId);
         if (!"STARTED".equals(meeting.status())) throw new IllegalStateException("Meeting must be started first");
         List<String> keyterms = meeting.topicId() == null ? List.of() : topics.approvedKeyterms(meeting.topicId());
@@ -129,33 +153,51 @@ public final class DeepgramMeetingPoc implements AutoCloseable {
             poc = new DeepgramMeetingPoc(requestId, meetingId, sessionId, audioOffsetMs, meetings, ledger, limits,
                     events, sessionCloser, persistenceHook);
         } catch (RuntimeException failure) {
-            abandonClaim(sessionCloser, ledger, sessionId, requestId);
+            abandonClaim(sessionCloser, ledger, sessionId, requestId, "PRE_DISPATCH_FAILED");
             return CompletableFuture.failedFuture(new IllegalStateException("Transcription preparation failed"));
         }
+        boolean dispatched = false;
         try {
+            if (recovery != null) {
+                poc.unregisterOwnership = recovery.onOwnershipLost(poc::ownershipLost);
+                recovery.verifyOwnership();
+            }
             // DISPATCHED begins only after all local preflight claims pass and immediately before transport creation.
             ledger.startDispatch(requestId);
+            dispatched = true;
+            if (recovery != null) recovery.verifyOwnership();
         } catch (RuntimeException failure) {
             try {
                 poc.discardBeforeDispatch();
             } finally {
-                abandonClaim(sessionCloser, ledger, sessionId, requestId);
+                abandonClaim(sessionCloser, ledger, sessionId, requestId,
+                        poc.ownershipLost.get() ? "OWNERSHIP_LOST" : "PRE_DISPATCH_FAILED");
+                if (dispatched) ledger.markUncertain(requestId);
             }
             return CompletableFuture.failedFuture(new IllegalStateException("Transcription preparation failed"));
         }
         CompletableFuture<DeepgramMeetingPoc> ready = new CompletableFuture<>();
         var connecting = DeepgramPocSession.connectLoopback(endpoint, options, limits, poc::receive);
+        poc.connecting = connecting;
+        if (poc.ownershipLost.get()) connecting.cancel(true);
         connecting.whenComplete((transport, failure) -> {
             if (failure != null) {
                 poc.failed.set(true);
-                poc.finishPersistence(DeepgramPocSession.StopReason.CONNECT_FAILED);
+                poc.finishPersistence(poc.ownershipLost.get() ? DeepgramPocSession.StopReason.OWNERSHIP_LOST
+                        : DeepgramPocSession.StopReason.CONNECT_FAILED);
                 ready.completeExceptionally(new IllegalStateException("Transcription connection failed"));
                 return;
             }
             poc.transport = transport;
             transport.completion().thenAccept(poc::finishPersistence);
-            if (poc.failed.get() || ready.isCancelled()) transport.close();
-            if (!ready.complete(poc)) transport.close();
+            boolean opened;
+            synchronized (poc) {
+                // Publish success and ownership loss through the same local lifecycle gate.
+                opened = !poc.ownershipLost.get() && !poc.failed.get() && ready.complete(poc);
+                if (!opened) ready.completeExceptionally(new IllegalStateException("Transcription connection unavailable"));
+            }
+            if (poc.ownershipLost.get()) transport.ownershipLost();
+            else if (!opened) transport.close();
         });
         ready.whenComplete((value, failure) -> {
             if (ready.isCancelled()) { connecting.cancel(true); poc.close(); }
@@ -169,6 +211,7 @@ public final class DeepgramMeetingPoc implements AutoCloseable {
                 try {
                     if (failed.get()) return;
                     persistenceHook.before(message);
+                    if (ownershipLost.get()) return;
                     if (message instanceof DeepgramMessage.Results result) transcript.accept(result);
                     else if (message instanceof DeepgramMessage.Metadata metadata) {
                         meetings.setStreamProviderSessionId(sessionId, metadata.requestId());
@@ -218,14 +261,15 @@ public final class DeepgramMeetingPoc implements AutoCloseable {
     }
 
     private void discardBeforeDispatch() {
+        unregisterOwnership.run();
         persistence.shutdownNow();
         transcript.close();
     }
 
     private static void abandonClaim(SessionCloser sessionCloser, CostLedgerService ledger,
-                                     UUID sessionId, UUID requestId) {
+                                     UUID sessionId, UUID requestId, String reason) {
         try {
-            sessionCloser.close(sessionId, "PRE_DISPATCH_FAILED");
+            sessionCloser.close(sessionId, reason);
         } catch (RuntimeException ignored) {
             // A failed local close must not prevent releasing a reservation that never reached the provider.
         }
@@ -281,7 +325,7 @@ public final class DeepgramMeetingPoc implements AutoCloseable {
                 }
             }
 
-            String closeReason = !persistenceStopped ? "PERSISTENCE_TIMEOUT"
+            String closeReason = ownershipLost.get() ? "OWNERSHIP_LOST" : !persistenceStopped ? "PERSISTENCE_TIMEOUT"
                     : failed.get() ? "PERSISTENCE_FAILED" : reason.name();
             try {
                 closeSessionOnce(closeReason);
@@ -312,9 +356,22 @@ public final class DeepgramMeetingPoc implements AutoCloseable {
             if (interrupted) Thread.currentThread().interrupt();
             // A provider or cleanup failure never stops the independent recording/meeting path.
             if (cleanupFailure != null) completion.completeExceptionally(new IllegalStateException("Transcription cleanup failed"));
+            else if (ownershipLost.get()) completion.complete(DeepgramPocSession.StopReason.OWNERSHIP_LOST);
             else if (failed.get()) completion.completeExceptionally(new IllegalStateException("Transcription persistence failed"));
             else completion.complete(reason);
         });
+    }
+
+    private void ownershipLost() {
+        synchronized (this) {
+            ownershipLost.set(true);
+            failed.set(true);
+            closing = true;
+        }
+        CompletableFuture<DeepgramPocSession> opening = connecting;
+        if (opening != null && !opening.isDone()) opening.cancel(true);
+        DeepgramPocSession current = transport;
+        if (current != null) current.ownershipLost();
     }
 
     private void watchTimedOutPersistence() {

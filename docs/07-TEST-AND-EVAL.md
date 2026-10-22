@@ -1,16 +1,16 @@
 # 07. 테스트/성능/실측 계획
 
-## 현재 검증 상태 (2026-10-18~21)
+## 현재 검증 상태 (2026-10-18~22)
 
 유료 API 호출 **0회 / 0원**. 각 결과는 아래 시점과 범위의 증거이며, 실제 STT/LLM 품질이나 전체 MVP 완료를 뜻하지 않는다.
 
 | 범위 | 최근 확인 결과 | 재현 경로·한계 |
 |---|---|---|
-| 서버 전체 | 21일 22:23, 176개 실행·실패/오류 0·Windows 링크 권한 skip 2 | `apps/api`: Maven `test`; 실제 PostgreSQL 15개 포함. 로그 `.tools/completion-final-full.log`. [DB 설정](../README.md#로컬-개발과-테스트) |
+| 서버 전체 | 22일 17:18, 193개 실행·실패/오류 0·Windows 링크 권한 skip 2 | `apps/api`: Maven `test`; 실제 PostgreSQL 16개 포함. 로그 `.tools/ownership-full-green.log`. [DB 설정](../README.md#로컬-개발과-테스트) |
 | OpenAI·Deepgram POC | 가짜 HTTP/WebSocket·주입 future 시험을 전체 서버 테스트에 포함 | PCM 전송량 제한·승인 keyterm·offset·다화자 저장·중복 방지·실패 후 녹음 상태 보존, OpenAI 교정/요약·usage 정산·timeout/cancel·예산 0·조작된 snapshot/patch 거부 검증. 운영 공급자 연결·실제 음성 품질·청구 미검증 |
 | 오프라인 평가·비용 계산 | Python 15개 통과 | [실행 안내](../scripts/README.md). CER/WER·용어 주석·화자 라벨 커버리지·입력 지연 백분위수, 명시적 단가의 36/48/60시간 계산. 합성 예제이며 실제 음성 품질·요금 실측이 아님 |
 | 비용 원장·예산 | H2 전용 10개와 실제 PostgreSQL 동시 예약·설정 변경·삭제 후 비용 보존·불확실 청구 대조·외부 트랜잭션 거절 통과 | 사용량 API의 null 실비·월 경계·경고/소진도 검증. 실제 공급자 요금 계산·연결은 별도 |
-| 서버 패키징·POC 명령 | 21일 22:24 최종 JAR 패키징, OpenAI·Deepgram 별도 main의 dry run 통과 | Spring 기동·키 조회·외부 호출 없이 입력·예산·출력 검증. Deepgram 입력은 1초 무음 PCM으로 음성 품질 증거가 아니다. 로그 `.tools/completion-final-package.log`, `.tools/completion-final-*-dryrun.json` |
+| 서버 패키징·POC 명령 | 22일 19:45 최종 JAR 패키징, OpenAI·Deepgram 별도 main의 dry run 통과 | Spring 기동·키 조회·외부 호출 없이 입력·예산·출력 검증. Deepgram 입력은 1초 무음 PCM으로 음성 품질 증거가 아니다. 로그 `.tools/ownership-package.log`, `.tools/ownership-*-dryrun.json` |
 | 웹 단위·정적 검사 | 21일 22:12, 15개, lint·타입 검사·빌드 통과 | `apps/web`: `npm test`, `npm run lint`, `npm run build` |
 | 브라우저 통합 | 14개 통과(27.0초) | [E2E 안내](../tests/e2e/README.md). 합성 마이크·저장 복구·비용 경고 포함 |
 | 저장 실패 | 브라우저 QuotaExceededError와 서버 청크/결합 IOException 회귀 통과 | 브라우저 자동 중지·명시적 누락 경고·재시도, 서버 DB 롤백 확인. 실제 디스크 포화 시험은 별도 |
@@ -30,7 +30,11 @@
 
 21일 추가 보강에서는 V8 이전 claim 없는 Deepgram stream의 시작 복구 누락을 실패 시험으로 재현하고 수정했다. 관련 14개 시험에서 기존 완료 stream과 다른 공급자 기록 보존·반복 실행을 확인했다. 독립 실행 POC 명령은 기본 dry run, 명시적 실행/합성 자료 승인/시간·금액 제한, 결과 파일 덮어쓰기 거부, 오류 비밀정보 제거를 적용했다. 가짜 Java를 쓰는 PowerShell 래퍼 시험 2개와 키 없는 runner 시험 17개를 통과했다. Deepgram 결과의 빈 단어 배열로 문자 수 제한을 우회하는 크기 증가도 실패 시험으로 재현하고 누적 JSON 바이트·최종 4MiB 제한을 추가했다.
 
-독립 구조 재검토는 새 명령·시작 복구 범위에서 BLOCK 없이 WATCH다. 남은 WATCH는 기존 PostgreSQL advisory lock 연결 유실 시 fail-stop 보호이며 운영 공급자 활성화 전 해결해야 한다. 코드 리뷰의 연결 대기 취소 누락(HIGH), 큰 OpenAI 결과의 비용 증거 소실·결과 경로 교체 경쟁(MEDIUM 2건)은 회귀 시험의 실패를 확인한 뒤 수정했다. 연결 취소 전파·늦은 연결 종료, 최초 파일 handle 유지, 큰 구조화 출력만 생략하고 request ID·usage·추정비용 보존을 추가했다. 재검토에서 해당 3건은 해소됐다. 리뷰 판정은 targeted green 직접 확인 전이었고 LSP 진단이 미완이어서 제한 범위 COMMENT다. 이후 부모 검증에서 관련 17개·전체 176개 시험을 통과했으나 전체 코드 승인으로 계산하지 않는다. 서버 전체 정적 분석·실제 공급자의 취소/재시작/시간 제한 검증도 별도다.
+21일 독립 구조 재검토는 새 명령·시작 복구 범위에서 WATCH였다. 코드 리뷰의 연결 대기 취소 누락(HIGH), 큰 OpenAI 결과의 비용 증거 소실·결과 경로 교체 경쟁(MEDIUM 2건)은 회귀 시험의 실패를 확인한 뒤 수정했다. 연결 취소 전파·늦은 연결 종료, 최초 파일 handle 유지, 큰 구조화 출력만 생략하고 request ID·usage·추정비용 보존을 추가했다. 재검토에서 해당 3건은 해소됐다. 이후 관련 17개·전체 176개 시험을 통과했으나 전체 코드 승인으로 계산하지 않는다.
+
+22일 잠금 유실 보강: 시작 복구 단위 10개·가짜 WebSocket/DB 통합 19개·transport 12개, 총 41개가 통과했다. 별도 실제 PostgreSQL 16개에서 전용 backend 강제 종료, 유실 후 재획득·예약·연결 거절, 후속 인스턴스의 APP_RESTART/UNCERTAIN 복구를 확인했다. 가짜 transport의 abort 예외와 연결 성공 공개 직전 유실도 포함한다. DB/driver 경고는 예외 종류·SQLState만 남기며 메시지의 비밀정보는 기록하지 않는다. 첫 PG 시험의 누적 원장 데이터와 전체 시험에서 드러난 비동기 정리 대기 누락은 테스트를 수정해 재검증했다.
+
+22일 독립 두 리뷰의 재검토 결과는 코드 COMMENT(미해결 수정 요청 0), 구조 WATCH이며 종합 COMMENT다. 제공된 진단 backend는 TypeScript/grep뿐으로 Java LSP 검증은 하지 못했다. 감시/로컬 차단을 분산 쓰기 보장으로 계산하지 않는다. 소유권 확인 뒤 이미 시작된 저장과 후속 소유자의 경합은 트랜잭션 소유권 검증으로 막아야 하며, 운영 공급자 활성화는 이 보호와 실제 POC 전까지 차단한다. lifecycle monitor 안의 future 성공 통지가 호출자 callback을 실행할 수 있는 점도 운영 연결 전 분리해야 한다. 서버 전체 정적 분석·실제 공급자의 취소/재시작/시간 제한은 별도다.
 
 사용자가 휴대폰의 Tailscale HTTPS 로그인과 실제 녹음 파일 재생을 확인했다. `.bin` 다운로드는 서버 응답의 고정 파일명 문제로 확인해 녹음 MIME에 맞게 `.webm`/`.ogg`로 수정했다. 저장 파일·인코딩은 변경하지 않았다. 추가 매개변수 시험의 로그인 제한 충돌은 테스트 준비에서 기존 SessionService를 사용해 해결했고, 파일 시험의 임시 경로는 Surefire `argLine`으로 작업 폴더를 지정했다. 유료 호출은 없으며 운영 반영은 남아 있다.
 

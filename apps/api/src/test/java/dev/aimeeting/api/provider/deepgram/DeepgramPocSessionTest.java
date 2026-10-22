@@ -1,8 +1,10 @@
 package dev.aimeeting.api.provider.deepgram;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -238,6 +240,26 @@ class DeepgramPocSessionTest {
         assertThat(result).isCompletedExceptionally();
         assertThat(session.completion()).isCompletedWithValue(DeepgramPocSession.StopReason.BACKPRESSURE);
         verify(socket, times(0)).sendBinary(any(ByteBuffer.class), org.mockito.ArgumentMatchers.eq(true));
+    }
+
+    @Test
+    void abortFailureDoesNotPreventTerminationFuturesOrPendingSendCleanup() throws Exception {
+        WebSocket socket = mock(WebSocket.class);
+        CompletableFuture<WebSocket> stalledSend = new CompletableFuture<>();
+        when(socket.sendBinary(any(ByteBuffer.class), org.mockito.ArgumentMatchers.eq(true)))
+                .thenReturn(stalledSend);
+        doThrow(new IllegalStateException("socket abort failed")).when(socket).abort();
+        DeepgramPocSession session = DeepgramPocSession.createForTest(socket, limits, ignored -> {});
+        CompletableFuture<Void> pending = session.sendAudio(new byte[] {1, 2});
+        CompletableFuture<Void> finishing = session.finish();
+
+        assertThatCode(session::close).doesNotThrowAnyException();
+
+        assertThat(session.completion().get(1, TimeUnit.SECONDS))
+                .isEqualTo(DeepgramPocSession.StopReason.USER_STOP);
+        assertThat(pending).isCompletedExceptionally();
+        assertThat(finishing).isCompletedExceptionally();
+        assertThat(session.finish()).isCompletedExceptionally();
     }
 
     private List<byte[]> bytes(List<ByteBuffer> buffers) {
