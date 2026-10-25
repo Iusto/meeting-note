@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { FormEvent, PropsWithChildren, ReactNode } from 'react'
+import type { PropsWithChildren, ReactNode } from 'react'
 import { ArrowLeft, LoaderCircle, LogOut } from './icons'
 import { ApiError, api } from './api'
 import { Brand } from './components'
@@ -9,50 +9,9 @@ import { MeetingsPage } from './pages/MeetingsPage'
 import { NewMeetingPage } from './pages/NewMeetingPage'
 import { TopicsPage } from './pages/TopicsPage'
 import { UsagePage } from './pages/UsagePage'
+import { LoginPage } from './pages/LoginPage'
 
 type AuthState = 'checking' | 'authenticated' | 'anonymous'
-
-function LoginPage({ onAuthenticated }: { onAuthenticated: () => void }) {
-  const [token, setToken] = useState('')
-  const [error, setError] = useState('')
-  const [submitting, setSubmitting] = useState(false)
-
-  async function submit(event: FormEvent) {
-    event.preventDefault()
-    if (!token.trim()) return
-    setSubmitting(true)
-    setError('')
-    try {
-      await api.createSession(token)
-      setToken('')
-      onAuthenticated()
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : '접속 토큰을 확인해 주세요.')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <main className="grid min-h-screen place-items-center bg-cream px-5 py-10">
-      <div className="absolute left-8 top-8"><Brand /></div>
-      <section className="w-full max-w-md rounded-[2rem] border border-white bg-white/85 p-8 shadow-soft backdrop-blur">
-        <p className="eyebrow">개인 작업 공간</p>
-        <h1 className="mt-3 text-3xl font-black tracking-[-0.04em] text-ink">내 회의록에 접속</h1>
-        <p className="mt-3 text-sm leading-6 text-slate-500">서버에서 발급한 접속 토큰을 입력하세요. 토큰은 브라우저에 저장하지 않고, 인증 후 HttpOnly 세션 쿠키만 사용합니다.</p>
-        <form className="mt-7 space-y-4" onSubmit={submit}>
-          <label className="block text-sm font-bold text-ink" htmlFor="token">접속 토큰</label>
-          <input id="token" type="password" autoComplete="current-password" className="field" value={token} onChange={(event) => setToken(event.target.value)} placeholder="••••••••••••" />
-          {error && <p role="alert" className="text-sm font-semibold text-red-700">{error}</p>}
-          <button className="button-primary w-full" disabled={submitting || !token.trim()}>
-            {submitting && <LoaderCircle className="h-4 w-4 animate-spin" />}
-            접속하기
-          </button>
-        </form>
-      </section>
-    </main>
-  )
-}
 
 function Shell({ children, onLogout }: PropsWithChildren<{ onLogout: () => Promise<void> }>) {
   return (

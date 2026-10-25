@@ -26,7 +26,7 @@ Copy-Item .env.example .env
 docker compose up --build
 ```
 
-`http://localhost:8088`에서 `APP_OWNER_TOKEN`으로 로그인한다. Mock 회의에서는 합성 전사를, `마이크 녹음 · 음성 인식 미연결` 회의에서는 실제 마이크 저장 흐름을 확인한다. 현재 공급자 API 키는 필요하지 않으며 `PAID_API_TESTS_ENABLED=true`도 앱 시작을 거부한다.
+`http://localhost:8088`에 처음 접속하면 기존 `APP_OWNER_TOKEN`으로 소유자를 확인하고 아이디·비밀번호를 등록한다. 이후에는 아이디·비밀번호로 로그인하며, 로그인 유지를 선택하면 서버 재시작 후에도 최대 30일 유지된다. 공용 기기에서는 해제한다. 공개 회원가입은 제공하지 않는다. Mock 회의에서는 합성 전사를, `마이크 녹음 · 음성 인식 미연결` 회의에서는 실제 마이크 저장 흐름을 확인한다. 현재 공급자 API 키는 필요하지 않으며 `PAID_API_TESTS_ENABLED=true`도 앱 시작을 거부한다.
 
 웹만 `127.0.0.1`에 바인딩하며 API·DB는 내부 네트워크를 쓴다. 종료는 `docker compose down`을 사용한다. `down -v`는 DB·녹음 볼륨을 삭제한다. 다른 기기에서의 마이크 사용은 [Tailscale HTTPS 설정·검증](docs/13-SECURITY-OPS.md#vpnhttps-배포-게이트)을 따른다. 배포 PC의 HTTPS 응답과 사용자 휴대폰의 로그인·녹음 파일 재생을 확인했다. 실제 STT의 WSS 연결은 미검증이다.
 

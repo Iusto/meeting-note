@@ -69,12 +69,14 @@ public class RequestSecurityFilter extends OncePerRequestFilter {
             reject(response, 413, "REQUEST_TOO_LARGE", "Request body exceeds the allowed size", requestId);
             return;
         }
-        boolean login = "/api/v1/session".equals(path) && "POST".equals(request.getMethod());
+        boolean login = ("/api/v1/session".equals(path) || "/api/v1/session/setup".equals(path))
+                && "POST".equals(request.getMethod());
         if (login && !allowLogin(request.getRemoteAddr())) {
             reject(response, 429, "RATE_LIMITED", "Too many login attempts", requestId);
             return;
         }
-        boolean publicPath = "/actuator/health".equals(path) || login;
+        boolean publicPath = "/actuator/health".equals(path) || login
+                || ("/api/v1/session/configuration".equals(path) && "GET".equals(request.getMethod()));
         if (!publicPath && !sessions.isValid(SessionController.cookieValue(request))) {
             reject(response, 401, "UNAUTHORIZED", "Authentication is required", requestId);
             return;

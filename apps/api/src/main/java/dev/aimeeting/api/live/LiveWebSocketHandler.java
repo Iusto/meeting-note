@@ -10,7 +10,10 @@ import java.io.IOException;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
@@ -18,6 +21,7 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 @Component
 public class LiveWebSocketHandler extends TextWebSocketHandler {
+    private static final Logger log = LoggerFactory.getLogger(LiveWebSocketHandler.class);
     private final MeetingRepository meetings;
     private final SpeechProvider provider;
     private final ObjectMapper mapper;
@@ -31,35 +35,55 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
         this.mapper = mapper;
         this.sessions = sessions;
         sessions.onInvalidation(this::closeAuthenticatedSockets);
+        sessions.onAllInvalidation(this::closeAllAuthenticatedSockets);
     }
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) throws Exception {
-        String authSessionId = (String) session.getAttributes().get("authSessionId");
-        openByAuthSession.computeIfAbsent(authSessionId, ignored -> ConcurrentHashMap.newKeySet()).add(session);
-        UUID meetingId = meetingId(session);
-        Meeting meeting = meetings.find(meetingId);
-        if ("LOCAL_RECORDING".equals(meeting.inputSource())) {
-            session.close(CloseStatus.POLICY_VIOLATION.withReason("Live streaming is unavailable for local recordings"));
-            return;
-        }
-        if (!"STARTED".equals(meeting.status())) {
-            session.close(CloseStatus.POLICY_VIOLATION.withReason("Meeting must be started first"));
-            return;
-        }
-        UUID streamSessionId = meetings.createStreamSession(meetingId);
-        liveContexts.put(session, new LiveContext(meetingId, streamSessionId));
-        provider.stream(meetingId, streamSessionId, event -> send(session, event));
+        sessions.withLifecycleGuard(() -> {
+            synchronized (session) {
+                String authSessionId = (String) session.getAttributes().get("authSessionId");
+                if (authSessionId == null) {
+                    session.close(CloseStatus.POLICY_VIOLATION.withReason("Authentication expired"));
+                    return;
+                }
+                openByAuthSession.computeIfAbsent(authSessionId, ignored -> ConcurrentHashMap.newKeySet()).add(session);
+                if (!sessions.isValid(authSessionId)) {
+                    closeAuthenticatedSockets(authSessionId);
+                    return;
+                }
+                UUID meetingId = meetingId(session);
+                Meeting meeting = meetings.find(meetingId);
+                if (!isRegistered(authSessionId, session) || !sessions.isValid(authSessionId)) return;
+                if ("LOCAL_RECORDING".equals(meeting.inputSource())) {
+                    session.close(CloseStatus.POLICY_VIOLATION.withReason("Live streaming is unavailable for local recordings"));
+                    return;
+                }
+                if (!"STARTED".equals(meeting.status())) {
+                    session.close(CloseStatus.POLICY_VIOLATION.withReason("Meeting must be started first"));
+                    return;
+                }
+                UUID streamSessionId = meetings.createStreamSession(meetingId);
+                liveContexts.put(session, new LiveContext(meetingId, streamSessionId));
+                if (!isRegistered(authSessionId, session) || !sessions.isValid(authSessionId)) {
+                    terminate(session, "SESSION_LOGOUT");
+                    return;
+                }
+                provider.stream(meetingId, streamSessionId, event -> send(session, event));
+            }
+        });
     }
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
-        terminate(session, "SOCKET_CLOSED");
-        String authSessionId = (String) session.getAttributes().get("authSessionId");
-        Set<WebSocketSession> open = openByAuthSession.get(authSessionId);
-        if (open != null) {
-            open.remove(session);
-            if (open.isEmpty()) openByAuthSession.remove(authSessionId, open);
+        synchronized (session) {
+            terminate(session, "SOCKET_CLOSED");
+            String authSessionId = (String) session.getAttributes().get("authSessionId");
+            Set<WebSocketSession> open = openByAuthSession.get(authSessionId);
+            if (open != null) {
+                open.remove(session);
+                if (open.isEmpty()) openByAuthSession.remove(authSessionId, open);
+            }
         }
     }
 
@@ -67,12 +91,36 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
         Set<WebSocketSession> open = openByAuthSession.remove(authSessionId);
         if (open == null) return;
         for (WebSocketSession session : open) {
-            terminate(session, "SESSION_LOGOUT");
-            try {
-                if (session.isOpen()) session.close(CloseStatus.POLICY_VIOLATION.withReason("Session logged out"));
-            } catch (IOException ignored) {
-                // The connection is already disappearing.
+            synchronized (session) {
+                try {
+                    terminate(session, "SESSION_LOGOUT");
+                } catch (RuntimeException failure) {
+                    log.warn("Authenticated WebSocket cleanup failed: operation=session invalidation, type={}",
+                            failure.getClass().getSimpleName());
+                } finally {
+                    try {
+                        if (session.isOpen()) session.close(CloseStatus.POLICY_VIOLATION.withReason("Session logged out"));
+                    } catch (IOException ignored) {
+                        // The connection is already disappearing.
+                    }
+                }
             }
+        }
+    }
+
+    private boolean isRegistered(String authSessionId, WebSocketSession session) {
+        Set<WebSocketSession> open = openByAuthSession.get(authSessionId);
+        return open != null && open.contains(session);
+    }
+
+    private void closeAllAuthenticatedSockets() {
+        for (String authSessionId : openByAuthSession.keySet()) closeAuthenticatedSockets(authSessionId);
+    }
+
+    @Scheduled(fixedDelayString = "${app.session-validation-interval-ms:30000}")
+    void validateOpenSessions() {
+        for (String authSessionId : openByAuthSession.keySet()) {
+            if (!sessions.isValid(authSessionId)) closeAuthenticatedSockets(authSessionId);
         }
     }
 
@@ -93,13 +141,29 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
         boolean anotherSocketExists = liveContexts.values().stream()
                 .anyMatch(other -> other.meetingId().equals(context.meetingId()));
         if (anotherSocketExists) {
-            provider.stop(context.streamSessionId());
-            meetings.closeStreamSession(context.streamSessionId(), reason);
+            runCleanup("provider session stop", () -> provider.stop(context.streamSessionId()));
+            runCleanup("stream session close", () -> meetings.closeStreamSession(context.streamSessionId(), reason));
             return;
         }
-        provider.stopMeeting(context.meetingId());
-        meetings.closeStreamSession(context.streamSessionId(), reason);
-        if ("STARTED".equals(meetings.find(context.meetingId()).status())) meetings.stop(context.meetingId());
+        runCleanup("provider meeting stop", () -> provider.stopMeeting(context.meetingId()));
+        runCleanup("stream session close", () -> meetings.closeStreamSession(context.streamSessionId(), reason));
+        try {
+            if ("STARTED".equals(meetings.find(context.meetingId()).status())) {
+                runCleanup("meeting stop", () -> meetings.stop(context.meetingId()));
+            }
+        } catch (RuntimeException failure) {
+            log.warn("Authenticated WebSocket cleanup failed: operation=meeting lookup, type={}",
+                    failure.getClass().getSimpleName());
+        }
+    }
+
+    private void runCleanup(String operation, Runnable cleanup) {
+        try {
+            cleanup.run();
+        } catch (RuntimeException failure) {
+            log.warn("Authenticated WebSocket cleanup failed: operation={}, type={}",
+                    operation, failure.getClass().getSimpleName());
+        }
     }
 
     private void send(WebSocketSession session, SpeechEvent event) {

@@ -102,6 +102,19 @@ class BackupRestoreValidationTest(unittest.TestCase):
                 ops.restore(args)
             self.assertFalse(target.exists())
 
+    def test_restore_session_invalidation_is_guarded_for_pre_authentication_backups(self):
+        args = mock.Mock(target_db="restored_db")
+        with mock.patch.object(ops, "psql") as psql:
+            ops.invalidate_restored_auth_sessions(args)
+
+        psql.assert_called_once()
+        passed_args, database, statement = psql.call_args.args
+        self.assertIs(passed_args, args)
+        self.assertEqual(database, "restored_db")
+        self.assertIn("to_regclass('public.auth_sessions')", statement)
+        self.assertIn("DELETE FROM public.auth_sessions", statement)
+        self.assertFalse(psql.call_args.kwargs["tuples"])
+
 
 if __name__ == "__main__":
     unittest.main()

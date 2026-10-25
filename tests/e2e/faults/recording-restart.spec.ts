@@ -13,6 +13,8 @@ const webPort = 5182
 const webOrigin = `http://127.0.0.1:${webPort}`
 const apiOrigin = `http://127.0.0.1:${apiPort}`
 const ownerToken = 'offline-restart-owner-token-000000000000'
+const ownerUsername = 'owner'
+const ownerPassword = 'synthetic-owner-password-2026'
 const psql = join(projectRoot, '.tools/postgres/pgsql/bin/psql.exe')
 const jar = join(projectRoot, 'apps/api/target/api-0.0.1-SNAPSHOT.jar')
 const vite = join(projectRoot, 'apps/web/node_modules/vite/bin/vite.js')
@@ -127,6 +129,22 @@ async function indexedRecording(page: import('playwright/test').Page, meetingId:
   }, meetingId)
 }
 
+async function loginOwner(page: import('playwright/test').Page) {
+  const status = await page.evaluate(async ({ token, username, password }) => {
+    const configuration = await fetch('/api/v1/session/configuration').then((response) => response.json()) as { setupRequired: boolean }
+    const response = await fetch(configuration.setupRequired ? '/api/v1/session/setup' : '/api/v1/session', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(configuration.setupRequired
+        ? { token, username, password, rememberMe: true }
+        : { username, password, rememberMe: true }),
+    })
+    return response.status
+  }, { token: ownerToken, username: ownerUsername, password: ownerPassword })
+  expect(status).toBe(200)
+}
+
 test.beforeAll(async () => {
   expect(enabled).toBeTruthy()
   expect(database).toMatch(/^ai_meeting_restart_[0-9a-f]{16}$/)
@@ -156,10 +174,7 @@ test('keeps browser audio through an owned API crash and completes after restart
   const sockets: string[] = []
   page.on('websocket', (socket) => sockets.push(socket.url()))
   await page.goto('/meetings')
-  const login = await page.evaluate(async (token) => fetch('/api/v1/session', {
-    method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }),
-  }).then((response) => response.status), ownerToken)
-  expect(login).toBe(200)
+  await loginOwner(page)
 
   const meeting = await page.evaluate(async () => {
     const create = await fetch('/api/v1/meetings', {
@@ -192,12 +207,8 @@ test('keeps browser audio through an owned API crash and completes after restart
   const pendingDuringOutage = await indexedRecording(page, meeting.id)
 
   await waitFor(`${apiOrigin}/actuator/health`, 'restarted API', startApi())
-  const staleSessionStatus = await page.evaluate(async (id) => (await fetch(`/api/v1/meetings/${id}`, { credentials: 'include' })).status, meeting.id)
-  expect(staleSessionStatus).toBe(401)
-  const reloginStatus = await page.evaluate(async (token) => (await fetch('/api/v1/session', {
-    method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }),
-  })).status, ownerToken)
-  expect(reloginStatus).toBe(200)
+  const retainedSessionStatus = await page.evaluate(async (id) => (await fetch(`/api/v1/meetings/${id}`, { credentials: 'include' })).status, meeting.id)
+  expect(retainedSessionStatus).toBe(200)
   await expect.poll(async () => page.evaluate(async (id) => (await fetch(`/api/v1/meetings/${id}`, { credentials: 'include' })).status, meeting.id)).toBe(200)
   await expect.poll(async () => (await indexedRecording(page, meeting.id)).pending, { timeout: 15_000 }).toBe(0)
 
@@ -234,7 +245,7 @@ test('keeps browser audio through an owned API crash and completes after restart
   await page.locator('audio').evaluate((element: HTMLAudioElement) => element.play())
   await expect.poll(() => page.locator('audio').evaluate((element: HTMLAudioElement) => element.currentTime)).toBeGreaterThan(0.1)
   await testInfo.attach('restart-recording-metrics', {
-    body: JSON.stringify({ staleSessionStatus, pendingDuringOutage, elapsedBeforeStop, metadata: result.metadata, browserStorage, sockets }, null, 2),
+    body: JSON.stringify({ retainedSessionStatus, pendingDuringOutage, elapsedBeforeStop, metadata: result.metadata, browserStorage, sockets }, null, 2),
     contentType: 'application/json',
   })
 })
@@ -244,10 +255,7 @@ test('stops safely on the browser quota boundary and recovers acknowledged audio
   const sockets: string[] = []
   page.on('websocket', (socket) => sockets.push(socket.url()))
   await page.goto('/meetings')
-  const login = await page.evaluate(async (token) => fetch('/api/v1/session', {
-    method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }),
-  }).then((response) => response.status), ownerToken)
-  expect(login).toBe(200)
+  await loginOwner(page)
 
   const meeting = await page.evaluate(async () => {
     const create = await fetch('/api/v1/meetings', {

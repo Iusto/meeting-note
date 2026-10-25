@@ -42,6 +42,11 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getLoginConfiguration: () => request<{ setupRequired: boolean }>('/session/configuration'),
+  setupOwner: (credentials: { token: string; username: string; password: string; rememberMe: boolean }) =>
+    request<void>('/session/setup', { method: 'POST', body: JSON.stringify(credentials) }),
+  login: (credentials: { username: string; password: string; rememberMe: boolean }) =>
+    request<void>('/session', { method: 'POST', body: JSON.stringify(credentials) }),
   getSession: () => request<unknown>('/session'),
   createSession: (token: string) =>
     request<void>('/session', { method: 'POST', body: JSON.stringify({ token }) }),

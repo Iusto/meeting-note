@@ -27,6 +27,7 @@
 | JDBC Connection·pool | [Connection](https://docs.oracle.com/en/java/javase/21/docs/api/java.sql/java/sql/Connection.html), [PooledConnection](https://docs.oracle.com/en/java/javase/21/docs/api/java.sql/javax/sql/PooledConnection.html) | network timeout·abort와 물리 연결 종료; pool 논리 close만으로 세션 잠금 해제를 보장하지 않음 |
 
 ## 사실/가정 구분
+- 인증 구현 근거(2026-10-22): [OWASP 비밀번호 저장](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html)의 PBKDF2-HMAC-SHA256 600,000회와 salt, [OWASP 세션 관리](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html)의 난수 세션·쿠키 속성·서버 만료/로그아웃을 확인했다. 새 의존성 없이 JDK를 사용한다. 30일 유지는 개인 소유 기기의 편의를 위한 명시적 선택이며 보편적인 세션 시간 권고로 간주하지 않는다.
 - **공식 확인:** Nova-3 한국어 언어코드, diarization 기능, keyterm 가능, 공개 가격, Sol 모델 ID/요금.
 - **미검증:** 실제 한국어 MES 정확도, 동일인 화자 유지, 겹친 발언 완벽 분리, P95 3초, 외부 STT의 4시간 연속 안정성, 개인 월 청구액.
 - **기록:** POC 측정 후 실험일·입력 환경·버전·오류 유형·실제 청구 내역을 별도 실험 결과로 추가.

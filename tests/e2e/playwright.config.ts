@@ -13,6 +13,10 @@ export default defineConfig({
   preserveOutput: 'always',
   expect: { timeout: 8_000 },
   reporter: [['list'], ['html', { open: 'never' }]],
+  projects: [
+    { name: 'owner-setup', testMatch: '**/account.setup.ts' },
+    { name: 'regression', testIgnore: '**/account.setup.ts', dependencies: ['owner-setup'] },
+  ],
   use: {
     baseURL,
     browserName: 'chromium',

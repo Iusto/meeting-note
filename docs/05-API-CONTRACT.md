@@ -2,9 +2,11 @@
 
 > 이 문서는 **우리 애플리케이션의 내부 계약**이다. 외부 Deepgram/OpenAI 공급자 이벤트·parameter의 실제 schema는 개발 당시 공식 문서/SDK에서 확인하고 adapter로 변환한다.
 
-## Phase 0 구현 범위 (2026-10-16)
-- `POST /api/v1/session {"token":"..."}`으로 단일 소유자를 인증한다. `GET`은 인증 여부 확인, `DELETE`는 로그아웃이다. 비밀 토큰은 저장하지 않고 `HttpOnly; SameSite=Strict` 세션 쿠키를 사용한다.
-- 구현된 회의 API는 목록/생성/조회, `start`, `stop`, `transcript`, revision 기반 세그먼트 교정이다. 나머지 API는 후속 Phase 계약이며 아직 제공하지 않는다.
+## 인증·기본 회의 계약 (2026-10-25)
+- `GET /api/v1/session/configuration`은 인증 없이 `{setupRequired}`를 반환한다. 최초 `POST /api/v1/session/setup {token,username,password,rememberMe}`에서 기존 접속 토큰으로 단일 소유자 계정을 등록하고 로그인한다. 등록 후 추가 가입과 토큰 로그인은 거절한다.
+- `POST /api/v1/session {username,password,rememberMe}`으로 로그인한다. 계정 등록 전의 기존 토큰 요청만 호환한다. `GET`은 인증 여부 확인, `DELETE`는 로그아웃이다. 세션 쿠키는 `HttpOnly; SameSite=Strict`, HTTPS에서 `Secure`이며 기본 12시간·로그인 유지 선택 시 30일이다. 서버 재시작 후에도 DB에 저장된 만료 전 세션은 유효하며 로그아웃하면 폐기한다.
+- 비밀번호는 소금값을 적용한 PBKDF2-HMAC-SHA256(600,000회), 세션은 무작위 원문의 SHA-256 해시만 저장한다. 가입·로그인에는 동일한 Origin 검사와 시도 제한을 적용한다. 비밀번호·접속 토큰은 브라우저 저장소에 남기지 않는다.
+- 기본 회의 API는 목록/생성/조회, `start`, `stop`, `transcript`, revision 기반 세그먼트 교정이다. 추가 구현 계약은 아래 녹음·사전·관리 절을 따른다.
 - 회의 상태는 `CREATED` → `STARTED` → `STOPPED`. 목록과 transcript 응답은 JSON 배열이다.
 - `/api/v1/meetings/{id}/live`는 인증과 정확한 Origin 검사를 통과한 연결에만 가상 이벤트를 전송한다. 동일 발언의 partial/final은 같은 `eventId`를 사용하고, 확정 저장 뒤에는 `segmentId`도 제공한다.
 - 추가 이벤트 `transcript.corrected`는 원문을 바꾸지 않고 `displayText`, `transcriptStatus=CORRECTED`, 증가한 `revision`을 전달한다. 화자 상태는 별도로 갱신한다.

@@ -410,6 +410,19 @@ def verify_original_text_immutability(args: argparse.Namespace) -> None:
         raise OperationError("restored immutable original-text behavior failed verification") from error
 
 
+def invalidate_restored_auth_sessions(args: argparse.Namespace) -> None:
+    """Keep the owner account while requiring every restored browser to log in again."""
+    psql(args, args.target_db, """
+        DO $invalidate_sessions$
+        BEGIN
+            IF to_regclass('public.auth_sessions') IS NOT NULL THEN
+                EXECUTE 'DELETE FROM public.auth_sessions';
+            END IF;
+        END
+        $invalidate_sessions$;
+    """, tuples=False)
+
+
 def rewrite_and_verify(args: argparse.Namespace, root: Path, manifest: dict[str, object]) -> None:
     portable_root = root.resolve(strict=True).as_posix()
     root_literal = sql_literal(portable_root + "/")
@@ -461,6 +474,7 @@ def restore(args: argparse.Namespace) -> None:
         db_created = True
         run([executable(args.pg_bin, "pg_restore"), *connection_args(args, args.target_db),
              "--exit-on-error", "--no-owner", "--no-acl", str(bundle / DUMP_NAME)])
+        invalidate_restored_auth_sessions(args)
         if target_root.exists():
             raise OperationError(f"target recording root appeared while restore was running: {target_root}")
         os.rename(staging, target_root)

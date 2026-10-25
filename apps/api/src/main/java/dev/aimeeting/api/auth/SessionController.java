@@ -5,7 +5,6 @@ import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import java.time.Duration;
 import java.util.Map;
@@ -26,12 +25,28 @@ public class SessionController {
         this.meetings = meetings;
     }
 
+    @GetMapping("/configuration")
+    public Map<String, Boolean> configuration() { return Map.of("setupRequired", sessions.setupRequired()); }
+
+    @PostMapping("/setup")
+    public Map<String, Boolean> setup(@Valid @RequestBody SetupRequest request, HttpServletRequest httpRequest,
+                                      HttpServletResponse response) {
+        SessionService.AuthenticatedSession session = sessions.setup(
+                request.token(), request.username(), request.password(), request.rememberMe());
+        if (session == null) throw unauthorized();
+        setCookie(response, httpRequest, session);
+        return Map.of("authenticated", true);
+    }
+
     @PostMapping
     public Map<String, Boolean> login(@Valid @RequestBody LoginRequest request, HttpServletRequest httpRequest,
                                       HttpServletResponse response) {
-        String sessionId = sessions.login(request.token());
-        if (sessionId == null) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid owner token");
-        response.addHeader(HttpHeaders.SET_COOKIE, cookie(sessionId, Duration.ofHours(12), httpRequest.isSecure()).toString());
+        String previous = cookieValue(httpRequest);
+        SessionService.AuthenticatedSession session = request.token() != null
+                ? sessions.loginWithToken(request.token(), previous)
+                : sessions.login(request.username(), request.password(), request.rememberMe(), previous);
+        if (session == null) throw unauthorized();
+        setCookie(response, httpRequest, session);
         return Map.of("authenticated", true);
     }
 
@@ -53,10 +68,23 @@ public class SessionController {
         return null;
     }
 
+    private void setCookie(HttpServletResponse response, HttpServletRequest request,
+                           SessionService.AuthenticatedSession session) {
+        response.addHeader(HttpHeaders.SET_COOKIE,
+                cookie(session.id(), session.lifetime(), request.isSecure()).toString());
+    }
+
     private ResponseCookie cookie(String value, Duration age, boolean secure) {
         return ResponseCookie.from(SessionService.COOKIE_NAME, value).httpOnly(true).secure(secure)
                 .sameSite("Strict").path("/").maxAge(age).build();
     }
 
-    public record LoginRequest(@NotBlank @Size(max = 512) String token) {}
+    private ResponseStatusException unauthorized() {
+        return new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials");
+    }
+
+    public record LoginRequest(@Size(max = 512) String token, @Size(max = 64) String username,
+                               @Size(max = 128) String password, boolean rememberMe) {}
+    public record SetupRequest(@Size(max = 512) String token, @Size(max = 64) String username,
+                               @Size(max = 128) String password, boolean rememberMe) {}
 }

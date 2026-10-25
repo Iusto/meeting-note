@@ -4,6 +4,9 @@ Run only with AI_MEETING_OPS_PG_TEST=1. Every database name and filesystem root
 is randomly generated and the test refuses the application database name.
 """
 
+import base64
+import hashlib
+import json
 import os
 from pathlib import Path
 import socket
@@ -13,6 +16,7 @@ import tempfile
 import time
 import unittest
 import urllib.request
+import urllib.error
 from uuid import uuid4
 
 
@@ -105,7 +109,13 @@ class PostgreSqlRoundTripTest(unittest.TestCase):
             meeting_empty = str(uuid4())
             completed = b"chunk-onechunk-two"
             chunks = [b"chunk-one", b"chunk-two"]
-            import hashlib
+            owner_username = "ops-owner"
+            owner_password = "synthetic-ops-owner-password"
+            password_salt = b"synthetic-ops-password-salt"
+            password_hash = hashlib.pbkdf2_hmac("sha256", owner_password.encode(), password_salt, 600_000, dklen=32)
+            raw_session = base64.urlsafe_b64encode(bytes(range(32))).decode().rstrip("=")
+            session_hash = hashlib.sha256(raw_session.encode("ascii")).digest()
+            encoded = lambda value: base64.b64encode(value).decode("ascii")
             for meeting, files in ((meeting_completed, {"chunk-00000000.bin": chunks[0], "chunk-00000001.bin": chunks[1], "recording.bin": completed}),
                                    (meeting_partial, {"chunk-00000000.bin": b"partial"})):
                 directory = source_root / meeting
@@ -135,6 +145,10 @@ INSERT INTO recording_chunks(recording_id,sequence_no,start_ms,end_ms,sha256,mim
  ('{rec2}',0,0,10,'{hashlib.sha256(b'partial').hexdigest()}','audio/webm',7,{q(str(source_root / meeting_partial / 'chunk-00000000.bin'))});
 INSERT INTO transcript_segments(id,meeting_id,provider_event_id,sequence_no,start_ms,end_ms,original_text,display_text,transcript_status,speaker_status)
  VALUES('{seg}','{meeting_completed}','ops-event',0,0,10,'original','display','FINAL','UNKNOWN');
+INSERT INTO owner_account(id,username,password_salt,password_hash)
+ VALUES(1,{q(owner_username)},{q(encoded(password_salt))},{q(encoded(password_hash))});
+INSERT INTO auth_sessions(id_hash,expires_at)
+ VALUES({q(encoded(session_hash))},CURRENT_TIMESTAMP + INTERVAL '30 days');
 UPDATE app_settings SET monthly_budget_usd=25 WHERE id=1;
 INSERT INTO meeting_summaries(id,meeting_id,version,provider,content_json,snapshot_json)
  VALUES('{summary}','{meeting_completed}',1,'MOCK','{{"summary":"kept","sourceSegmentIds":["{seg}"],"decisions":[],"actionItems":[],"unresolved":[]}}','[{{"segmentId":"{seg}","revision":0}}]');
@@ -159,14 +173,41 @@ DELETE FROM meetings WHERE id='{deleted_meeting}';
                 common = ["--pg-bin", str(pg_bin), "--host", host, "--port", port, "--user", user, "--api-stopped"]
                 run([*program, "backup", *common, "--source-db", source_db, "--source-root", str(source_root), "--bundle", str(bundle)])
                 run([*program, "restore", *common, "--maintenance-db", maintenance, "--target-db", target_db, "--target-root", str(target_root), "--bundle", str(bundle)])
-                restored_api = start_api(target_db, target_root, free_port())
-                stop_api(restored_api)
+                restored_sessions = subprocess.run(
+                    [exe("psql"), *connection, "--dbname", target_db, "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+                     "--tuples-only", "--no-align", "--command", "SELECT COUNT(*) FROM auth_sessions"],
+                    text=True, check=True, capture_output=True)
+                self.assertEqual(restored_sessions.stdout.strip(), "0", "Restore must invalidate existing sessions")
+                restored_port = free_port()
+                restored_api = start_api(target_db, target_root, restored_port)
+                try:
+                    former_session = urllib.request.Request(
+                        f"http://127.0.0.1:{restored_port}/api/v1/session",
+                        headers={"Cookie": f"meeting_session={raw_session}"})
+                    with self.assertRaises(urllib.error.HTTPError) as rejected:
+                        urllib.request.urlopen(former_session, timeout=5)
+                    self.assertEqual(rejected.exception.code, 401)
+
+                    login = urllib.request.Request(
+                        f"http://127.0.0.1:{restored_port}/api/v1/session",
+                        data=json.dumps({"username": owner_username, "password": owner_password,
+                                         "rememberMe": False}).encode("utf-8"),
+                        headers={"Content-Type": "application/json",
+                                 "Origin": f"http://127.0.0.1:{restored_port}"},
+                        method="POST")
+                    with urllib.request.urlopen(login, timeout=10) as response:
+                        self.assertEqual(response.status, 200)
+                        self.assertIn("meeting_session=", response.headers.get("Set-Cookie", ""))
+                finally:
+                    stop_api(restored_api)
                 check = f"""
 SELECT (SELECT monthly_budget_usd FROM app_settings WHERE id=1)::text,
        (SELECT COUNT(*) FROM meeting_summaries)::text,
        (SELECT COUNT(*) FROM meetings)::text,
        (SELECT COUNT(*) FROM recording_chunks WHERE path LIKE {q(target_root.resolve().as_posix() + '/%')})::text,
-       (SELECT COUNT(*) FROM pg_constraint WHERE contype='f' AND convalidated)::text;
+       (SELECT COUNT(*) FROM pg_constraint WHERE contype='f' AND convalidated)::text,
+       (SELECT username || ':' || password_salt || ':' || password_hash FROM owner_account WHERE id=1)::text,
+       (SELECT COUNT(*) FROM auth_sessions)::text;
 """
                 verified = subprocess.run([exe("psql"), *connection, "--dbname", target_db, "--set", "ON_ERROR_STOP=1",
                                            "--tuples-only", "--no-align", "--field-separator", "\t"],
@@ -174,6 +215,13 @@ SELECT (SELECT monthly_budget_usd FROM app_settings WHERE id=1)::text,
                 values = verified.stdout.strip().split("\t")
                 self.assertEqual(values[:4], ["25.00", "1", "3", "3"])
                 self.assertGreater(int(values[4]), 0)
+                self.assertEqual(values[5], f"{owner_username}:{encoded(password_salt)}:{encoded(password_hash)}")
+                self.assertEqual(values[6], "1", "Credential login must create one new restored-database session")
+                source_sessions = subprocess.run(
+                    [exe("psql"), *connection, "--dbname", source_db, "--no-psqlrc", "--set", "ON_ERROR_STOP=1",
+                     "--tuples-only", "--no-align", "--command", "SELECT COUNT(*) FROM auth_sessions"],
+                    text=True, check=True, capture_output=True)
+                self.assertEqual(source_sessions.stdout.strip(), "1", "Restore must not mutate the source database")
                 ledger_sql = "SELECT row_to_json(u)::text FROM ai_usage_records u ORDER BY id"
                 ledger_rows = []
                 for database in (source_db, target_db):

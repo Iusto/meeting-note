@@ -1,28 +1,32 @@
 # 07. 테스트/성능/실측 계획
 
-## 현재 검증 상태 (2026-10-18~22)
+## 현재 검증 상태 (2026-10-18~25)
 
 유료 API 호출 **0회 / 0원**. 각 결과는 아래 시점과 범위의 증거이며, 실제 STT/LLM 품질이나 전체 MVP 완료를 뜻하지 않는다.
 
 | 범위 | 최근 확인 결과 | 재현 경로·한계 |
 |---|---|---|
-| 서버 전체 | 22일 17:18, 193개 실행·실패/오류 0·Windows 링크 권한 skip 2 | `apps/api`: Maven `test`; 실제 PostgreSQL 16개 포함. 로그 `.tools/ownership-full-green.log`. [DB 설정](../README.md#로컬-개발과-테스트) |
+| 서버 전체 | 25일 199개 실행·실패/오류 0·Windows 링크 권한 skip 2 | `apps/api`: Maven `test`; 실제 PostgreSQL 16개 포함. 로그 `.tools/login-full.log`. [DB 설정](../README.md#로컬-개발과-테스트) |
 | OpenAI·Deepgram POC | 가짜 HTTP/WebSocket·주입 future 시험을 전체 서버 테스트에 포함 | PCM 전송량 제한·승인 keyterm·offset·다화자 저장·중복 방지·실패 후 녹음 상태 보존, OpenAI 교정/요약·usage 정산·timeout/cancel·예산 0·조작된 snapshot/patch 거부 검증. 운영 공급자 연결·실제 음성 품질·청구 미검증 |
 | 오프라인 평가·비용 계산 | Python 15개 통과 | [실행 안내](../scripts/README.md). CER/WER·용어 주석·화자 라벨 커버리지·입력 지연 백분위수, 명시적 단가의 36/48/60시간 계산. 합성 예제이며 실제 음성 품질·요금 실측이 아님 |
 | 비용 원장·예산 | H2 전용 10개와 실제 PostgreSQL 동시 예약·설정 변경·삭제 후 비용 보존·불확실 청구 대조·외부 트랜잭션 거절 통과 | 사용량 API의 null 실비·월 경계·경고/소진도 검증. 실제 공급자 요금 계산·연결은 별도 |
-| 서버 패키징·POC 명령 | 22일 19:45 최종 JAR 패키징, OpenAI·Deepgram 별도 main의 dry run 통과 | Spring 기동·키 조회·외부 호출 없이 입력·예산·출력 검증. Deepgram 입력은 1초 무음 PCM으로 음성 품질 증거가 아니다. 로그 `.tools/ownership-package.log`, `.tools/ownership-*-dryrun.json` |
-| 웹 단위·정적 검사 | 21일 22:12, 15개, lint·타입 검사·빌드 통과 | `apps/web`: `npm test`, `npm run lint`, `npm run build` |
-| 브라우저 통합 | 14개 통과(27.0초) | [E2E 안내](../tests/e2e/README.md). 합성 마이크·저장 복구·비용 경고 포함 |
+| 서버 패키징·POC 명령 | 25일 인증 포함 JAR 패키징 통과. 별도 POC main의 dry run은 22일 검증 | dry run은 Spring 기동·키 조회·외부 호출 없이 입력·예산·출력 검증. Deepgram 입력은 1초 무음 PCM으로 음성 품질 증거가 아니다. 로그 `.tools/login-package.log`, `.tools/ownership-*-dryrun.json` |
+| 웹 단위·정적 검사 | 25일 15개, lint·타입 검사·빌드 통과 | `apps/web`: `npm test`, `npm run lint`, `npm run build` |
+| 브라우저 통합 | 25일 17개 통과 | [E2E 안내](../tests/e2e/README.md). 최초 계정 등록·비밀번호 오류·로그인 유지·토큰 로그인 차단, 합성 마이크·저장 복구·비용 경고 포함. Vite preview 사용 |
 | 저장 실패 | 브라우저 QuotaExceededError와 서버 청크/결합 IOException 회귀 통과 | 브라우저 자동 중지·명시적 누락 경고·재시도, 서버 DB 롤백 확인. 실제 디스크 포화 시험은 별도 |
 | 녹음 다운로드 확장자 | 19일 수정 후 녹음 관련 19개 실행·실패/오류 0·Windows 링크 skip 2 | `RecordingControllerIntegrationTest,RecordingStorageFailureIntegrationTest,RecordingStorageTest`. WebM/Ogg·codec 매개변수·대소문자·알 수 없는 형식의 `.bin` 유지와 원본 바이트/해시 검증. 수정 전 확장자 실패 4건 재현. 운영 API 이미지 재빌드 전에는 기존 `.bin` 응답 유지 |
 | 브라우저 quota 실험 | 별도 CDP/IndexedDB 시험 추가, 현재 Chrome 154에서 capability skip | 1byte 제한 적용 응답에도 실제 16MiB 쓰기를 허용했다. 강제 제한·복구 통과로 계산하지 않는다. 호스트 디스크 포화와도 별개 |
-| API 강제 재시작 | 최종 JAR로 별도 E2E 재검증 통과(20.0초) | 19일 시간 기준 수정 후 quota 시험과 함께 실행: 1통과·1skip(36.0초). 소유 API만 재시작, 새로고침 없는 재인증·청크 복구·해시/재생·IndexedDB 정리. 임시 DB·프로세스 정리 확인 |
-| 백업·복원 | 21일 22:13 최종 JAR로 8개 실행·실패/오류 0·Windows 링크 skip 1(23.8초) | [운영 안내](../scripts/README.md). V8 포함 실제 PostgreSQL 복원·앱 기동. 원장 18개 필드·사용량 없는 청구 대조·삭제된 회의 비용·새 경로 복원 포함. 로그 `.tools/completion-backup.log` |
+| API 강제 재시작 | 25일 별도 E2E: 재시작 1통과·quota capability skip 1 | 소유 API만 재시작, DB 세션 유지로 재로그인 없이 청크 복구·해시/재생·IndexedDB 정리. 로그 `.tools/login-restart.log` |
+| 백업·복원 | 25일 실제 PostgreSQL 왕복·앱 기동 통과 | [운영 안내](../scripts/README.md). V9 계정·비밀번호 보존, 복원 세션 0건·이전 쿠키 401·재로그인 성공·원본 DB 세션 보존. 기존 원장·경로·원문 불변 검증 포함. 운영 단위 18개 실행(skip 2: Windows 링크·별도 PG opt-in). 로그 `.tools/login-restore.log`, `.tools/login-ops-unit.log` |
 | 합성 마이크 연속 녹음 | 19일 04:30, 실제 4시간 재시험 통과. 7,059청크·14,400,058ms·116,756,339bytes | 480개 상태 점검, 일시 업로드 장애 복구·최종 결합·다운로드/저장 파일 SHA-256·새로고침 후 재생 통과. 청크 순서·시간 구간 단절 0건. 실제 마이크 음질·음성 내용 무손실·외부 STT 연결은 별도 |
-| 데이터 격리 | 기존 앱 DB 회의 170개 유지, 이번 임시 DB·API/Web 프로세스 정리 완료 | 서버·운영·재시작·브라우저·장시간 시험은 별도 합성 DB 사용 |
+| 데이터 격리 | 기존 앱 DB 미사용, 소유 임시 DB·API/Web 프로세스 정리 | 서버·운영·재시작·브라우저 시험은 별도 합성 DB 사용. 170개 유지 확인은 이전 검증 시점의 결과 |
 | Docker·원격 HTTPS | 19일 사용자 로그에서 api/web 빌드와 DB/API/web Healthy 확인. 배포 PC에서 로컬 HTTP·Tailscale HTTPS 루트 200, 미인증 `/api/v1/session` 각각 401 직접 확인. 사용자 휴대폰 로그인·녹음 재생 확인 | 표준 TLS 인증서 검증을 사용했다. 스크립트 가짜 명령 테스트 7개·기존 프록시 인증 시험 통과. 제어 named pipe 제한은 유지되며 실제 STT WSS는 미검증 |
 
 남은 검증은 실제 디스크 포화/절전·변경 이미지 재배포와 외부 공급자 품질이다. 실비 POC는 별도 승인 전 실행하지 않는다.
+
+25일 인증 보강: 최초 토큰 확인 후 단일 소유자 계정·12시간/선택적 30일 DB 세션을 도입했다. 로그인·등록과 연결 시작/폐기의 경합을 하나의 프로세스 내 잠금으로 보호하고 트랜잭션 완료 후 연결을 종료한다. 만료 연결은 30초 주기로 확인한다. 정리 실패가 인증 응답으로 전파되지 않으며 진단에는 예외 클래스만 기록한다. 최초 브라우저 실패 2건은 누락된 Origin 헤더와 개발 서버 HMR 연결로 확인해 수정했다.
+
+이번 인증 변경의 독립 코드 재검토는 APPROVE, 구조 검토는 CLEAR로 종합 APPROVE다. 경합 테스트에서 실제 잠금 대기 진입을 확인하고, 공급자 종료가 실패해도 DB stream/meeting 정리와 소켓 닫기를 각각 수행하는 회귀를 추가했다. 단일 프로세스의 현재 Fake 공급자 범위이며 실제 공급자 활성화 승인을 뜻하지 않는다. Java 전용 정적 분석은 별도이며 컴파일·JUnit과 웹 lint·TypeScript 검사를 수행했다. Docker daemon 접근 실패로 변경 이미지는 아직 배포하지 않았다.
 
 추가 통합 시험은 API 키를 사용하지 않았다. 다화자 final의 두 번째 DB 삽입을 실패시켜 전체 발언과 speaker가 롤백되는지 H2·실제 PostgreSQL에서 확인했다. final 이후 늦은 partial, 전사/승인 용어 변경 중 AI 지연 응답, 거절된 응답·잘못된 usage·예약 초과·무응답·호출자 취소도 포함했다. 서버 로그는 `.tools/ai-integration-full.log`에 있다. 웹 15개와 lint·타입 검사·빌드도 재통과했다.
 

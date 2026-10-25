@@ -1,9 +1,14 @@
-import { expect, test, type Page, type WebSocket } from 'playwright/test'
+import { expect, test, type APIRequestContext, type Page, type WebSocket } from 'playwright/test'
 
 const ownerToken = process.env.E2E_OWNER_TOKEN ?? 'phase0-e2e-owner-token-000000000000'
+const ownerUsername = 'owner'
+const ownerPassword = 'synthetic-owner-password-2026'
 const label = {
   token: '\uC811\uC18D \uD1A0\uD070',
-  login: '\uC811\uC18D\uD558\uAE30',
+  username: '\uC544\uC774\uB514',
+  password: '\uBE44\uBC00\uBC88\uD638',
+  rememberMe: '\uC774 \uAE30\uAE30\uC5D0\uC11C 30\uC77C \uB3D9\uC548 \uB85C\uADF8\uC778 \uC720\uC9C0',
+  login: '\uB85C\uADF8\uC778',
   loginHeading: '\uB0B4 \uD68C\uC758\uB85D\uC5D0 \uC811\uC18D',
   newMeeting: '\uC0C8 \uD68C\uC758 \uB9CC\uB4E4\uAE30',
   title: '\uD68C\uC758 \uC81C\uBAA9',
@@ -17,10 +22,25 @@ const label = {
 }
 
 async function login(page: Page) {
-  await page.getByLabel(label.token).fill(ownerToken)
+  await page.getByLabel(label.username).fill(ownerUsername)
+  await page.getByLabel(label.password).fill(ownerPassword)
   await page.getByRole('button', { name: label.login }).click()
   await expect(page.getByText('MOCK MODE')).toBeVisible()
 }
+
+async function configureOwner(request: APIRequestContext) {
+  const configuration = await request.get('/api/v1/session/configuration')
+  expect(configuration.ok()).toBeTruthy()
+  if ((await configuration.json() as { setupRequired: boolean }).setupRequired) {
+    const setup = await request.post('/api/v1/session/setup', {
+      headers: { Origin: new URL(process.env.E2E_BASE_URL ?? 'http://localhost:5173').origin },
+      data: { token: ownerToken, username: ownerUsername, password: ownerPassword, rememberMe: true },
+    })
+    expect(setup.ok(), 'Phase 0 owner account setup must succeed').toBeTruthy()
+  }
+}
+
+test.beforeAll(async ({ request }) => { await configureOwner(request) })
 
 async function createAndStartMeeting(page: Page, title: string) {
   await page.getByRole('link', { name: label.newMeeting }).click()
@@ -39,18 +59,54 @@ test('denies meeting access when the browser has no authenticated session', asyn
 
   await page.goto('/meetings')
   await expect(page.getByRole('heading', { name: label.loginHeading })).toBeVisible()
-  await expect(page.getByLabel(label.token)).toBeVisible()
+  await expect(page.getByLabel(label.username)).toBeVisible()
+  await expect(page.getByLabel(label.password)).toBeVisible()
+  await expect(page.getByLabel(label.token)).toHaveCount(0)
 })
 
-test('issues an owner session cookie without storing the owner token in browser storage', async ({ page, context }) => {
+test('rejects a wrong owner password', async ({ page }) => {
   await page.goto('/meetings')
+  await page.getByLabel(label.username).fill(ownerUsername)
+  await page.getByLabel(label.password).fill('synthetic-wrong-password-2026')
+  await page.getByRole('button', { name: label.login }).click()
+
+  await expect(page.getByRole('alert')).toBeVisible()
+  await expect(page.getByRole('heading', { name: label.loginHeading })).toBeVisible()
+  expect((await page.request.get('/api/v1/meetings')).status()).toBe(401)
+})
+
+test('keeps a remembered owner session across reload and a reopened browser context', async ({ page, context, browser }) => {
+  await page.goto('/meetings')
+  await expect(page.getByLabel(label.rememberMe)).toBeChecked()
   await login(page)
 
   const sessionCookie = (await context.cookies()).find((cookie) => cookie.name === 'meeting_session')
   expect(sessionCookie).toMatchObject({ httpOnly: true, sameSite: 'Strict' })
   expect(sessionCookie?.value).toBeTruthy()
+  expect(sessionCookie!.expires - Date.now() / 1_000).toBeGreaterThan(29 * 24 * 60 * 60)
+  expect(sessionCookie!.expires - Date.now() / 1_000).toBeLessThanOrEqual(30 * 24 * 60 * 60)
   expect(await page.evaluate(() => ({ ...localStorage }))).toEqual({})
   expect(await page.evaluate(() => ({ ...sessionStorage }))).toEqual({})
+
+  await page.reload()
+  await expect(page.getByText('MOCK MODE')).toBeVisible()
+  const reopened = await browser.newContext({
+    baseURL: process.env.E2E_BASE_URL ?? 'http://localhost:5173',
+    storageState: await context.storageState(),
+  })
+  try {
+    const reopenedPage = await reopened.newPage()
+    await reopenedPage.goto('/meetings')
+    await expect(reopenedPage.getByText('MOCK MODE')).toBeVisible()
+  } finally { await reopened.close() }
+})
+
+test('rejects raw owner-token login after account setup', async ({ request }) => {
+  const response = await request.post('/api/v1/session', {
+    headers: { Origin: new URL(process.env.E2E_BASE_URL ?? 'http://localhost:5173').origin },
+    data: { token: ownerToken },
+  })
+  expect(response.status()).toBe(401)
 })
 
 test('persists the fake live transcript and denies access after logout', async ({ page, context }, testInfo) => {
