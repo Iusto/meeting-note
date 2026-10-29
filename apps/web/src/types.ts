@@ -5,11 +5,19 @@ export interface Meeting {
   title: string
   revision: number
   status: MeetingStatus
-  inputSource?: 'MOCK' | 'LOCAL_RECORDING'
+  inputSource?: 'MOCK' | 'LOCAL_RECORDING' | 'LIVE'
   topicId?: string | null
   createdAt?: string
   startedAt?: string | null
   endedAt?: string | null
+}
+
+export interface AiConfiguration {
+  enabled: boolean
+  speechAvailable: boolean
+  llmAvailable: boolean
+  maximumAudioSeconds: number
+  maximumMeetingUsd: number
 }
 
 export type TranscriptStatus =

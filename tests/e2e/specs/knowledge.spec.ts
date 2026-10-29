@@ -63,7 +63,7 @@ test('preserves original and user edits while marking saved mock summaries stale
   await expect(page.getByText('종료됨', { exact: true })).toBeVisible()
   const id = page.url().match(/meetings\/([^/]+)/)![1]
   await page.getByRole('button', { name: '가상 요약 생성', exact: true }).click()
-  const summary = page.getByRole('region', { name: '저장된 가상 요약' })
+  const summary = page.getByRole('region', { name: '저장된 요약' })
   await expect(summary.getByText('MOCK · 요약 버전 1', { exact: true })).toBeVisible()
   const first = await page.evaluate(async (id) => ({
     transcript: await (await fetch(`/api/v1/meetings/${id}/transcript`)).json(),

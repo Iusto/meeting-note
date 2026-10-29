@@ -1,5 +1,6 @@
 package dev.aimeeting.api.usage;
 
+import dev.aimeeting.api.config.AiConfiguration;
 import dev.aimeeting.api.settings.AppSettings;
 import dev.aimeeting.api.settings.SettingsRepository;
 import dev.aimeeting.api.usage.MonthlyUsage.MeetingUsage;
@@ -22,11 +23,13 @@ public class UsageService {
     private final JdbcTemplate jdbc;
     private final SettingsRepository settings;
     private final CostLedgerService ledger;
+    private final AiConfiguration ai;
 
-    public UsageService(JdbcTemplate jdbc, SettingsRepository settings, CostLedgerService ledger) {
+    public UsageService(JdbcTemplate jdbc, SettingsRepository settings, CostLedgerService ledger, AiConfiguration ai) {
         this.jdbc = jdbc;
         this.settings = settings;
         this.ledger = ledger;
+        this.ai = ai;
     }
 
     @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
@@ -69,7 +72,7 @@ public class UsageService {
                 : totals.budgetCommittedUsd().multiply(BigDecimal.valueOf(100))
                         .compareTo(current.monthlyBudgetUsd().multiply(BigDecimal.valueOf(current.warnAtPercent()))) >= 0
                         ? "WARNING" : "OK";
-        return new MonthlyUsage(month.toString(), "USD", false, recordedSeconds, totals.estimatedUsd(), totals.actualUsd(),
+        return new MonthlyUsage(month.toString(), "USD", ai.enabled(), recordedSeconds, totals.estimatedUsd(), totals.actualUsd(),
                 totals.reservedUsd(), totals.budgetCommittedUsd(), remaining, totals.unreconciledCount(),
                 current.monthlyBudgetUsd(), current.warnAtPercent(), budgetState, meetings);
     }

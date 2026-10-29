@@ -1,10 +1,11 @@
 [CmdletBinding()]
-param()
+param([switch]$EnablePaidAi, [switch]$OpenMeeting)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $savedEnvironment = @{}
-foreach ($name in @('PAID_API_TESTS_ENABLED', 'TAILSCALE_HOST', 'WEB_PORT', 'APP_OWNER_TOKEN', 'POSTGRES_PASSWORD')) {
+foreach ($name in @('PAID_API_TESTS_ENABLED', 'DEEPGRAM_API_KEY', 'OPENAI_API_KEY',
+        'TAILSCALE_HOST', 'WEB_PORT', 'APP_OWNER_TOKEN', 'POSTGRES_PASSWORD')) {
     $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 
@@ -17,6 +18,22 @@ function New-LocalSecret {
 
 Push-Location $projectRoot
 try {
+    $deepgramKey = ''
+    $openAiKey = ''
+    if ($EnablePaidAi) {
+        $deepgramKey = [string]$savedEnvironment['DEEPGRAM_API_KEY']
+        if ([string]::IsNullOrWhiteSpace($deepgramKey)) {
+            $deepgramKey = [string][Environment]::GetEnvironmentVariable('DEEPGRAM_API_KEY', 'User')
+        }
+        $openAiKey = [string]$savedEnvironment['OPENAI_API_KEY']
+        if ([string]::IsNullOrWhiteSpace($openAiKey)) {
+            $openAiKey = [string][Environment]::GetEnvironmentVariable('OPENAI_API_KEY', 'User')
+        }
+        if ([string]::IsNullOrWhiteSpace($deepgramKey) -or [string]::IsNullOrWhiteSpace($openAiKey)) {
+            throw 'Paid AI requires DEEPGRAM_API_KEY and OPENAI_API_KEY in the process or Windows user environment.'
+        }
+    }
+
     $docker = (Get-Command docker -ErrorAction Stop).Source
     $tailscale = Get-Command tailscale -ErrorAction SilentlyContinue
     if ($tailscale) { $tailscale = $tailscale.Source }
@@ -54,8 +71,10 @@ try {
     }
     if ($port -lt 1 -or $port -gt 65535) { throw 'WEB_PORT must be between 1 and 65535.' }
 
-    # Process overrides also defeat an inherited paid opt-in; restore them on exit.
-    $env:PAID_API_TESTS_ENABLED = 'false'
+    # Process overrides defeat values inherited from .env; restore them on exit.
+    $env:PAID_API_TESTS_ENABLED = if ($EnablePaidAi) { 'true' } else { 'false' }
+    $env:DEEPGRAM_API_KEY = if ($EnablePaidAi) { $deepgramKey } else { '' }
+    $env:OPENAI_API_KEY = if ($EnablePaidAi) { $openAiKey } else { '' }
     $env:TAILSCALE_HOST = $hostname
     $env:WEB_PORT = [string]$port
     # Use the project's secrets rather than unrelated inherited shell values.
@@ -89,7 +108,16 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Could not read container status.' }
     Write-Host "Address: https://$hostname"
     Write-Host 'Login token: APP_OWNER_TOKEN in the project .env file. Do not paste it into chat.'
-    Write-Host 'Verify login and microphone access from another device on your tailnet. Paid APIs remain disabled.'
+    if ($EnablePaidAi) {
+        Write-Host 'Verify login, AI availability, and microphone access from another device on your tailnet.'
+    } else {
+        Write-Host 'Verify login and microphone access from another device on your tailnet. Paid APIs remain disabled.'
+    }
+    if ($OpenMeeting) {
+        Write-Host 'Before recording: sign in, check /usage for remaining monthly and meeting budgets, then select LIVE and your microphone.'
+        Write-Host 'Opening this page does not start recording or make a paid provider request.'
+        Start-Process "https://$hostname/meetings/new"
+    }
 } finally {
     foreach ($name in $savedEnvironment.Keys) {
         [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')

@@ -1,10 +1,12 @@
 package dev.aimeeting.api.topic;
 
+import dev.aimeeting.api.provider.openai.MeetingAiApplicationService;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -19,8 +21,12 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/topics")
 public class TopicController {
     private final TopicService topics;
+    private final MeetingAiApplicationService ai;
 
-    public TopicController(TopicService topics) { this.topics = topics; }
+    public TopicController(TopicService topics, MeetingAiApplicationService ai) {
+        this.topics = topics;
+        this.ai = ai;
+    }
 
     @GetMapping public List<Topic> list() { return topics.list(); }
     @PostMapping public Topic create(@Valid @RequestBody CreateTopic request) {
@@ -54,8 +60,10 @@ public class TopicController {
     @GetMapping("/{topicId}/keyterms") public List<String> keyterms(@PathVariable UUID topicId) {
         return topics.keyterms(topicId);
     }
-    @PostMapping("/{topicId}/suggest-terms") public List<GlossaryTerm> suggest(@PathVariable UUID topicId) {
-        return topics.suggest(topicId);
+    @PostMapping("/{topicId}/suggest-terms") public CompletableFuture<List<GlossaryTerm>> suggest(
+            @PathVariable UUID topicId) {
+        return ai.enabled() ? ai.generateTopicCandidates(topicId)
+                : CompletableFuture.completedFuture(topics.suggest(topicId));
     }
 
     public record CreateTopic(@NotBlank @Size(max = 200) String name, @Size(max = 2_000) String description) {}

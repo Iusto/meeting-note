@@ -1,5 +1,6 @@
 package dev.aimeeting.api.settings;
 
+import dev.aimeeting.api.config.AiConfiguration;
 import dev.aimeeting.api.web.ApiException;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.DecimalMax;
@@ -20,20 +21,29 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/v1/settings")
 public class SettingsController {
     private final SettingsRepository settings;
+    private final AiConfiguration ai;
 
-    public SettingsController(SettingsRepository settings) { this.settings = settings; }
+    public SettingsController(SettingsRepository settings, AiConfiguration ai) {
+        this.settings = settings;
+        this.ai = ai;
+    }
 
     @GetMapping
-    public AppSettings get() { return settings.get(); }
+    public AppSettings get() { return withDeploymentState(settings.get()); }
 
     @PatchMapping
     public AppSettings update(@Valid @RequestBody UpdateSettings request) {
-        if (Boolean.TRUE.equals(request.paidApiEnabled())) {
+        if (Boolean.TRUE.equals(request.paidApiEnabled()) && !ai.enabled()) {
             throw new ApiException(HttpStatus.BAD_REQUEST, "PAID_API_DISABLED",
-                    "Paid API mode cannot be enabled in this build");
+                    "Paid API mode must be enabled by the server operator");
         }
-        return settings.update(request.monthlyBudgetUsd(), request.warnAtPercent(),
-                request.perMeetingMaxMinutes(), request.recordingRetentionDays(), request.revision());
+        return withDeploymentState(settings.update(request.monthlyBudgetUsd(), request.warnAtPercent(),
+                request.perMeetingMaxMinutes(), request.recordingRetentionDays(), request.revision(), request.perMeetingBudgetUsd()));
+    }
+
+    private AppSettings withDeploymentState(AppSettings value) {
+        return new AppSettings(value.monthlyBudgetUsd(), value.warnAtPercent(), value.perMeetingMaxMinutes(),
+                value.recordingRetentionDays(), value.revision(), ai.enabled(), value.perMeetingBudgetUsd());
     }
 
     public record UpdateSettings(
@@ -43,5 +53,7 @@ public class SettingsController {
             @NotNull @Min(1) @Max(1440) Integer perMeetingMaxMinutes,
             @Min(1) @Max(3650) Integer recordingRetentionDays,
             @NotNull @Min(0) Integer revision,
-            Boolean paidApiEnabled) {}
+            Boolean paidApiEnabled,
+            @DecimalMin("0.01") @DecimalMax("10000.00") @Digits(integer = 5, fraction = 2)
+            BigDecimal perMeetingBudgetUsd) {}
 }

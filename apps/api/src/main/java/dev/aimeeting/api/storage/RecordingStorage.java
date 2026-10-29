@@ -88,10 +88,84 @@ public class RecordingStorage {
                     }
                 }
             }
+            if (webmParts(meetingId, chunks) > 1) {
+                remuxWebm(meetingId, chunks, temporary);
+                bytes = Files.size(temporary);
+                digest = sha256Digest();
+                try (InputStream input = Files.newInputStream(temporary)) {
+                    byte[] buffer = new byte[64 * 1024];
+                    int read;
+                    while ((read = input.read(buffer)) != -1) digest.update(buffer, 0, read);
+                }
+            }
             moveAtomically(temporary, destination);
             return new AssembledRecording(destination, bytes, HexFormat.of().formatHex(digest.digest()));
         } finally {
             Files.deleteIfExists(temporary);
+        }
+    }
+
+    private boolean startsWebm(UUID meetingId, StoredChunk chunk) throws IOException {
+        try (InputStream input = Files.newInputStream(requireStoredPath(meetingId, chunk.path()))) {
+            return java.util.Arrays.equals(input.readNBytes(4), new byte[] {0x1a, 0x45, (byte) 0xdf, (byte) 0xa3});
+        }
+    }
+
+    private int webmParts(UUID meetingId, List<StoredChunk> chunks) throws IOException {
+        int parts = 0;
+        for (StoredChunk chunk : chunks) if (startsWebm(meetingId, chunk)) parts++;
+        return parts;
+    }
+
+    // Independent MediaRecorder sessions each contain a WebM header and timestamps starting at zero.
+    // Remux their verified bytes rather than concatenating containers into an unplayable file.
+    private void remuxWebm(UUID meetingId, List<StoredChunk> chunks, Path destination) throws IOException {
+        Path directory = destination.getParent();
+        java.util.ArrayList<Path> temporaryFiles = new java.util.ArrayList<>();
+        java.util.ArrayList<Path> parts = new java.util.ArrayList<>();
+        OutputStream output = null;
+        try {
+            for (StoredChunk chunk : chunks) {
+                if (output == null || startsWebm(meetingId, chunk)) {
+                    if (output != null) output.close();
+                    Path part = Files.createTempFile(directory, ".recording-part-", ".tmp");
+                    temporaryFiles.add(part);
+                    parts.add(part);
+                    output = Files.newOutputStream(part);
+                }
+                try (InputStream input = Files.newInputStream(requireStoredPath(meetingId, chunk.path()))) {
+                    input.transferTo(output);
+                }
+            }
+            if (output != null) { output.close(); output = null; }
+            Path manifest = Files.createTempFile(directory, ".recording-list-", ".tmp");
+            temporaryFiles.add(manifest);
+            Files.writeString(manifest, parts.stream().map(part -> "file '" + part.getFileName() + "'\n")
+                    .collect(java.util.stream.Collectors.joining()));
+            Path merged = Files.createTempFile(directory, ".recording-merged-", ".tmp");
+            temporaryFiles.add(merged);
+            Process process = new ProcessBuilder("ffmpeg", "-nostdin", "-v", "error", "-y",
+                    "-f", "concat", "-safe", "0", "-protocol_whitelist", "file", "-i", manifest.getFileName().toString(),
+                    "-map", "0:a:0", "-c", "copy", "-f", "webm", merged.getFileName().toString())
+                    .directory(directory.toFile()).redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+            try {
+                if (!process.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)) {
+                    process.destroyForcibly();
+                    throw new IOException("Recording remux timed out; source chunks are retained");
+                }
+                if (process.exitValue() != 0 || Files.size(merged) == 0) {
+                    throw new IOException("Recording remux failed; source chunks are retained");
+                }
+            } catch (InterruptedException interrupted) {
+                process.destroyForcibly();
+                Thread.currentThread().interrupt();
+                throw new IOException("Recording remux interrupted", interrupted);
+            }
+            Files.move(merged, destination, StandardCopyOption.REPLACE_EXISTING);
+        } finally {
+            if (output != null) output.close();
+            for (Path temporary : temporaryFiles) Files.deleteIfExists(temporary);
         }
     }
 

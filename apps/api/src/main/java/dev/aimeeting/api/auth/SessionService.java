@@ -11,6 +11,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.Base64;
 import java.util.List;
+import java.util.ArrayList;
 import java.util.Locale;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
@@ -45,6 +46,7 @@ public class SessionService {
     private final SecureRandom random;
     private final byte[] dummyHash;
     private final ReentrantLock lifecycleLock = new ReentrantLock();
+    private final ThreadLocal<List<Runnable>> pendingNotifications = ThreadLocal.withInitial(ArrayList::new);
     private volatile Consumer<String> invalidationListener = ignored -> {};
     private volatile Runnable allInvalidationListener = () -> {};
 
@@ -155,7 +157,7 @@ public class SessionService {
         try {
             action.run();
         } finally {
-            lifecycleLock.unlock();
+            unlockAndNotify();
         }
     }
 
@@ -179,9 +181,9 @@ public class SessionService {
 
     private LifecycleLease acquireMutationGuard() {
         lifecycleLock.lock();
-        if (!TransactionSynchronizationManager.isSynchronizationActive()) return lifecycleLock::unlock;
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) return this::unlockAndNotify;
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override public void afterCompletion(int status) { lifecycleLock.unlock(); }
+            @Override public void afterCompletion(int status) { unlockAndNotify(); }
         });
         return () -> {};
     }
@@ -197,12 +199,26 @@ public class SessionService {
 
     private void afterCommit(Runnable action) {
         if (!TransactionSynchronizationManager.isSynchronizationActive()) {
-            action.run();
+            deferNotification(action);
             return;
         }
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-            @Override public void afterCommit() { action.run(); }
+            @Override public void afterCommit() { deferNotification(action); }
         });
+    }
+
+    private void deferNotification(Runnable action) {
+        if (lifecycleLock.isHeldByCurrentThread()) pendingNotifications.get().add(action);
+        else action.run();
+    }
+
+    /** Network/provider cleanup must not prevent another authenticated lifecycle operation from acquiring the lock. */
+    private void unlockAndNotify() {
+        lifecycleLock.unlock();
+        if (lifecycleLock.isHeldByCurrentThread()) return;
+        List<Runnable> notifications = pendingNotifications.get();
+        pendingNotifications.remove();
+        for (Runnable notification : notifications) notification.run();
     }
 
     private void lockAuthenticationSetup() {

@@ -2,7 +2,7 @@ CREATE TABLE glossary_terms (
   id UUID PRIMARY KEY, canonical VARCHAR(200) NOT NULL, normalized_canonical VARCHAR(200) NOT NULL UNIQUE,
   meaning TEXT NOT NULL, status VARCHAR(20) NOT NULL, source VARCHAR(20) NOT NULL,
   created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CHECK (status IN ('PENDING','APPROVED','REJECTED')), CHECK (source IN ('MANUAL','MOCK'))
+  CHECK (status IN ('PENDING','APPROVED','REJECTED')), CONSTRAINT chk_glossary_term_source CHECK (source IN ('MANUAL','MOCK'))
 );
 CREATE TABLE glossary_aliases (
   id UUID PRIMARY KEY, term_id UUID NOT NULL REFERENCES glossary_terms(id) ON DELETE CASCADE,

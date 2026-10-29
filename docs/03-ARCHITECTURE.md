@@ -1,9 +1,11 @@
-# 03. 시스템 아키텍처 (개인용 v2)
+# 03. 시스템 아키텍처
 
-아래는 목표 구조다. 현재 외부 STT/LLM은 앱에 연결하지 않았으며 구현 상태는 [개발 계획](08-IMPLEMENTATION-PLAN.md)을 따른다.
+웹앱은 REST로 회의·녹음·사전을 관리하고 Mock 전사 또는 실제 AI를 선택한다. LIVE 모드는 인증된 내부 WebSocket으로 PCM16 16kHz mono 프레임을 서버에 보내고, 서버가 Deepgram과 OpenAI를 호출한다. 구현과 실측 상태는 [개발 계획](08-IMPLEMENTATION-PLAN.md)을 따른다.
 
-## 결론
+## 구조를 선택한 이유
 **React SPA + Spring Boot 모듈러 모놀리식 + PostgreSQL + 디스크 + Deepgram(STT 후보) + OpenAI Sol(요약·교정)**. 로컬 Python/STT/LLM Worker **없음**. 공급자 의존성은 `SpeechProvider` 인터페이스로 격리하되 복잡한 자동 AI Router는 만들지 않는다.
+
+개인 홈서버 한 대에서 운영하므로 배포·백업 단위를 단순하게 유지한다. 관계와 수정 이력은 PostgreSQL에, 큰 오디오 파일은 디스크에 둔다. 브라우저가 공급자에 직접 접속하지 않아 키·예산·회의 시간축을 서버에서 관리할 수 있다.
 
 ```mermaid
 flowchart TD
@@ -23,7 +25,7 @@ gpt-6.1-sol]
 ```
 
 ## 경계·역할
-- **브라우저:** `getUserMedia`, 필요시 AudioWorklet/PCM 변환, 녹음(녹음 형식은 사전 검증), 부분 자막 UI. 직접 Deepgram/OpenAI 장기 키 접근 금지.
+- **브라우저:** 하나의 `getUserMedia` 스트림을 MediaRecorder 원본 녹음과 AudioWorklet PCM16 16kHz mono 전사 송신에 함께 사용한다. 직접 Deepgram/OpenAI 장기 키에 접근하지 않는다.
 - **Spring Boot:** 회의 상태/인증/저장소/비동기 작업/비용 기록, 오디오 WebSocket relay. 실시간 스트림에 DB 또는 LLM이 블로킹 영향을 주지 않도록 메모리 큐·별도 실행자/백프레셔 설정.
 - **Deepgram:** 첫 후보 `model=nova-3&language=ko&interim_results=true&diarize_model=latest&keyterm=...`. 실제 endpoint/파라미터 계약은 구현 당시 문서에 따라 검증. `diarize_model=v2`는 **스트리밍 불가**.
 - **OpenAI:** 요약·교정·용어 후보에만 사용. `gpt-6.1-sol` Standard / Responses / 구조화 출력.
@@ -46,10 +48,10 @@ gpt-6.1-sol]
 - 장시간 녹음 포맷/코덱과 timestamp 드리프트는 별도 검증 필요.
 - PC 오디오(Teams/Zoom) 캡처는 브라우저/OS 권한 제약으로 **MVP 범위 밖**, 대면 마이크부터.
 
-## 공급자 소유권 보호 (연결 준비 코드)
+## 공급자 소유권 보호
 선택적인 `DeepgramStartupRecovery`는 전용 PostgreSQL 세션의 advisory lock을 감시하고 예약·전송·연결 직전에 소유권을 재확인한다. 잠금·연결·backend PID가 바뀌면 해당 인스턴스의 guarded STT만 재시작 전까지 차단한다. 활성 STT는 `OWNERSHIP_LOST`로 종료하고 전송된 비용은 `UNCERTAIN`으로 남긴다. 회의와 로컬 녹음은 계속된다.
 
-감시 주기는 기본 1초, JDBC query/network 제한은 2초/3초다. 이는 장애 감지와 로컬 차단이며 DB 쓰기와 원자적인 소유권 보장은 아니다. 이미 진행 중인 저장이나 후속 인스턴스와의 경합은 트랜잭션 안의 소유권 검증으로 추가 차단해야 한다. 현재 guarded 경로는 loopback POC뿐이며, 운영 활성화에는 이 보호와 실제 한국어 품질 게이트가 필요하다.
+감시 주기는 기본 1초, JDBC query/network 제한은 2초/3초다. 유료 모드에서 시작 복구와 소유권 확인을 활성화하고, 소유권 유실은 공급자 연결과 후속 저장을 차단한다. 잠금 유실·재시작 경합 검증 결과는 [07](07-TEST-AND-EVAL.md)에 기록한다. 한국어 품질은 같은 앱의 실사용에서 확인한다.
 
 ## 추후 확장시 고려, 지금은 배제
 Redis, Kafka, K8s, 벡터 DB, 로컬 pyannote, GPU 서버, WebRTC 별도 SFU, 테넌트·결제 시스템. 공급자 변경이 실제 필요할 때만 second adapter 추가.

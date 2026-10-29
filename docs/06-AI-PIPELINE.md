@@ -1,9 +1,11 @@
 # 06. AI 파이프라인 · 전문용어 교정 · 화자 정책
 
+아래 정책은 Mock과 실제 공급자 경로에 함께 적용한다. LIVE 전사는 Deepgram, 교정·요약·용어 후보는 OpenAI로 연결되며 실제 호출은 서버의 명시적 유료 opt-in과 예산이 모두 있을 때만 시작한다. 구현 상태는 [08](08-IMPLEMENTATION-PLAN.md), 내부 계약은 [05](05-API-CONTRACT.md), 공급자 계약의 근거는 [공식 출처](references/12-OFFICIAL-REFERENCES.md)를 따른다.
+
 ## Provider 역할
 | 단계 | 현재 계획 | 확정/검증 |
 |---|---|---|
-| Live STT | Deepgram `nova-3`, 한국어 `ko`, interim/final, diarization, keyterm | **POC 후보** |
+| Live STT | Deepgram `nova-3`, 한국어 `ko`, interim/final, diarization, keyterm | 웹앱 연결 대상, 실제 품질 미검증 |
 | 배치 STT/재전사 | Deepgram Nova-3 prerecorded 또는 동등한 API | 필요 구간만, P1 이후 |
 | 전문용어 후보 | OpenAI Responses `gpt-6.1-sol` | 사용자가 승인해야 적용 |
 | 문맥 교정 | `gpt-6.1-sol` + 규칙 기반 필터 | 확정 전사 기반, 비동기 |
@@ -30,6 +32,9 @@
 - LLM이 `confidence: 0.99`라고 하더라도 확률 보정이 아닌 모형의 자가 평정이다.
 
 ### LLM 교정용 schema 예시
+
+설계 의도를 설명하는 예시이며 endpoint payload를 보장하지 않는다. 실제 검증 규칙은 `provider/openai/MeetingAiPayloads.java`를 기준으로 한다. 긴 전사는 여러 요청으로 나눠 처리하고, 교정·요약·용어 후보는 사용자가 버튼을 눌렀을 때만 생성한다. 저장된 교정과 `PENDING / OPENAI` 용어 후보는 사용자가 검토·승인한다.
+
 ```json
 {
   "edits": [

@@ -23,5 +23,6 @@ public record LedgerEntry(
         Long inputTokens,
         Long outputTokens,
         OffsetDateTime createdAt,
-        OffsetDateTime updatedAt
+        OffsetDateTime updatedAt,
+        UUID topicId
 ) {}

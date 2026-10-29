@@ -10,5 +10,11 @@ public record ReservationRequest(
         String operation,
         String priceVersion,
         BigDecimal reservedUsd,
-        long maximumAudioSeconds
-) {}
+        long maximumAudioSeconds,
+        UUID topicId
+) {
+    public ReservationRequest(UUID meetingId, String provider, String model, String operation,
+                              String priceVersion, BigDecimal reservedUsd, long maximumAudioSeconds) {
+        this(meetingId, provider, model, operation, priceVersion, reservedUsd, maximumAudioSeconds, null);
+    }
+}

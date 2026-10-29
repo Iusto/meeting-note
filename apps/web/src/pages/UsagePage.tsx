@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { ApiError } from '../api'
+import { ApiError, api } from '../api'
 import { AppLink } from '../router'
 import { usageApi } from '../usageApi'
 import type { Settings, Usage } from '../usageApi'
+import type { AiConfiguration } from '../types'
 
 const usd = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })
 
@@ -12,23 +13,28 @@ export function UsagePage({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [usage, setUsage] = useState<Usage | null>(null)
   const [settings, setSettings] = useState<Settings | null>(null)
   const [budget, setBudget] = useState('')
+  const [meetingBudget, setMeetingBudget] = useState('3')
   const [warn, setWarn] = useState('80')
   const [minutes, setMinutes] = useState('240')
   const [retention, setRetention] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [aiConfiguration, setAiConfiguration] = useState<AiConfiguration>()
 
   useEffect(() => {
     let active = true
     usageApi.settings().then((value) => {
       if (!active) return
-      setSettings(value); setBudget(String(value.monthlyBudgetUsd)); setWarn(String(value.warnAtPercent))
+      setMeetingBudget(String(value.perMeetingBudgetUsd)); setSettings(value); setBudget(String(value.monthlyBudgetUsd)); setWarn(String(value.warnAtPercent))
       setMinutes(String(value.perMeetingMaxMinutes)); setRetention(value.recordingRetentionDays === null ? '' : String(value.recordingRetentionDays))
     }).catch((caught) => {
       if (!active) return
       if (caught instanceof ApiError && caught.status === 401) onUnauthorized()
       else setError(caught instanceof Error ? caught.message : '설정을 불러오지 못했습니다.')
+    })
+    api.getAiConfiguration().then((value) => { if (active) setAiConfiguration(value) }).catch((caught) => {
+      if (caught instanceof ApiError && caught.status === 401) onUnauthorized()
     })
     return () => { active = false }
   }, [onUnauthorized])
@@ -49,9 +55,10 @@ export function UsagePage({ onUnauthorized }: { onUnauthorized: () => void }) {
     if (!settings) return
     setBusy(true); setError(''); setNotice('')
     try {
-      const updated = await usageApi.saveSettings({ monthlyBudgetUsd: Number(budget), warnAtPercent: Number(warn), perMeetingMaxMinutes: Number(minutes), recordingRetentionDays: retention === '' ? null : Number(retention), revision: settings.revision })
+      const updated = await usageApi.saveSettings({ monthlyBudgetUsd: Number(budget), perMeetingBudgetUsd: Number(meetingBudget), warnAtPercent: Number(warn), perMeetingMaxMinutes: Number(minutes), recordingRetentionDays: retention === '' ? null : Number(retention), revision: settings.revision })
       setSettings(updated)
-      setNotice('설정을 저장했습니다. 유료 API는 계속 차단됩니다.')
+      setAiConfiguration(await api.getAiConfiguration())
+      setNotice(`설정을 저장했습니다.${aiConfiguration?.enabled ? ' 새 유료 요청부터 변경한 상한을 적용합니다.' : ' 유료 API는 계속 차단됩니다.'}`)
       setUsage(await usageApi.usage(month))
     } catch (caught) {
       if (caught instanceof ApiError && caught.status === 401) onUnauthorized()
@@ -61,7 +68,7 @@ export function UsagePage({ onUnauthorized }: { onUnauthorized: () => void }) {
 
   return <main className="mx-auto max-w-5xl px-5 py-10 md:px-10">
     <p className="eyebrow">개인 작업 공간</p><h1 className="mt-3 text-3xl font-black">사용량·예산</h1>
-    <p className="mt-4 rounded-2xl bg-mint p-4 text-sm leading-6 text-moss">외부 API 호출이 차단되어 있습니다. 가상 전사·요약과 로컬 녹음의 외부 API 비용은 0 USD입니다. 서버·저장 공간 비용은 포함하지 않습니다.</p>
+    <p className="mt-4 rounded-2xl bg-mint p-4 text-sm leading-6 text-moss">{aiConfiguration?.enabled ? '유료 AI가 활성화되어 있습니다. LIVE 전사와 AI 요약·교정·용어 후보 요청은 아래 예산과 서버 상한 안에서 비용 원장에 기록됩니다.' : '외부 API 호출이 차단되어 있습니다. 가상 전사·요약과 로컬 녹음의 외부 API 비용은 0 USD입니다.'} 서버·저장 공간 비용은 포함하지 않습니다.</p>
     {error && <p role="alert" className="mt-4 text-sm text-red-700">{error}</p>}
     {notice && <p role="status" className="mt-4 text-sm text-moss">{notice}</p>}
     <section className="mt-6 rounded-2xl border border-moss/10 bg-white p-6" aria-label="월별 사용량">
@@ -84,7 +91,7 @@ export function UsagePage({ onUnauthorized }: { onUnauthorized: () => void }) {
         <div className="mt-5 space-y-3">{usage.meetings.length === 0 ? <p className="text-sm text-slate-500">이 달에 시작한 회의가 없습니다.</p> : usage.meetings.map((meeting) => <div key={meeting.meetingId} className="flex flex-wrap items-center justify-between gap-2 border-t border-moss/10 pt-3 text-sm">
           <AppLink className="font-bold text-moss underline" href={`/meetings/${meeting.meetingId}/live`}>{meeting.title}</AppLink>
           {meeting.retentionReviewDue && <span className="rounded bg-amber-100 px-2 py-1 text-xs font-bold text-amber-900">보관 검토 대상</span>}
-          <span>{meeting.inputSource === 'MOCK' ? '가상 회의' : '로컬 녹음'} · {(meeting.recordedSeconds / 60).toFixed(1)}분 · 완료 파일 {(meeting.recordingBytes / 1024 / 1024).toFixed(2)} MiB · 추정 {usd.format(meeting.estimatedUsd)} USD{meeting.reservedUsd > 0 && ` · 예약 ${usd.format(meeting.reservedUsd)} USD`}</span>
+          <span>{meeting.inputSource === 'MOCK' ? '가상 회의' : meeting.inputSource === 'LIVE' ? '실제 AI + 원본 녹음' : '로컬 녹음'} · {(meeting.recordedSeconds / 60).toFixed(1)}분 · 완료 파일 {(meeting.recordingBytes / 1024 / 1024).toFixed(2)} MiB · 추정 {usd.format(meeting.estimatedUsd)} USD{meeting.reservedUsd > 0 && ` · 예약 ${usd.format(meeting.reservedUsd)} USD`}</span>
         </div>)}</div>
       </> : <p className="mt-4 text-sm text-slate-500">사용량을 불러오는 중…</p>}
     </section>
@@ -92,10 +99,11 @@ export function UsagePage({ onUnauthorized }: { onUnauthorized: () => void }) {
       <h2 className="text-xl font-black">예산·보관 설정</h2>
       <form className="mt-5 grid gap-4 sm:grid-cols-2" onSubmit={(event) => void save(event)}>
         <label className="text-sm font-bold">월 예산 (USD)<input type="number" className="field mt-2" required min="0" max="10000" step="0.01" disabled={!settings || busy} value={budget} onChange={(event) => setBudget(event.target.value)} /></label>
+        <label className="text-sm font-bold">회의당 최대 예산 (USD)<input type="number" className="field mt-2" required min="0.01" max="10000" step="0.01" disabled={!settings || busy} value={meetingBudget} onChange={(event) => setMeetingBudget(event.target.value)} /></label>
         <label className="text-sm font-bold">예산 경고 기준 (%)<input type="number" className="field mt-2" required min="1" max="100" step="1" disabled={!settings || busy} value={warn} onChange={(event) => setWarn(event.target.value)} /></label>
         <label className="text-sm font-bold">유료 작업 회당 최대 시간 (분)<input type="number" className="field mt-2" required min="1" max="1440" step="1" disabled={!settings || busy} value={minutes} onChange={(event) => setMinutes(event.target.value)} /></label>
         <label className="text-sm font-bold">녹음 보관 검토 주기 (일)<input type="number" className="field mt-2" min="1" max="3650" step="1" placeholder="제한 없음" disabled={!settings || busy} value={retention} onChange={(event) => setRetention(event.target.value)} /></label>
-        <p className="text-xs leading-5 text-slate-500 sm:col-span-2">보관 주기가 비어 있으면 제한을 두지 않습니다. 설정을 저장해도 녹음을 자동 삭제하지 않습니다. 유료 작업 시간·경고 기준은 향후 외부 API 연결 시 적용할 설정이며, 현재 로컬 녹음을 중단하지 않습니다.</p>
+        <p className="text-xs leading-5 text-slate-500 sm:col-span-2">보관 주기가 비어 있으면 제한을 두지 않습니다. 설정을 저장해도 녹음을 자동 삭제하지 않습니다. 유료 작업 시간·예산 제한은 새 외부 API 요청에 적용하며, 현재 진행 중인 로컬 녹음은 중단하지 않습니다.</p>
         <button className="button-primary justify-self-start" disabled={!settings || busy}>설정 저장</button>
       </form>
     </section>

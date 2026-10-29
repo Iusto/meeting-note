@@ -623,6 +623,52 @@ class PostgresMigrationIntegrationTest {
         }
     }
 
+    @Test
+    void revokedDurableClaimRejectsLateFinalAndMetadataWrites() {
+        Meeting meeting = meetings.create("Synthetic revoked stream " + UUID.randomUUID());
+        meetings.start(meeting.id());
+        UUID requestId = UUID.randomUUID();
+        ledger.reserve(requestId, deepgramRequest(meeting.id(), "1"));
+        UUID streamId = meetings.createDeepgramStreamSession(meeting.id(), 0, requestId);
+        var first = new MeetingRepository.FinalSegmentInput("fenced-" + UUID.randomUUID(), 1, 0, 100,
+                "first", null, "UNKNOWN");
+        assertThat(meetings.insertActiveDeepgramFinalBatchIfAbsent(meeting.id(), streamId,
+                java.util.List.of(first))).hasSize(1);
+        meetings.closeStreamSession(streamId, "OWNERSHIP_LOST");
+        var late = new MeetingRepository.FinalSegmentInput("late-" + UUID.randomUUID(), 2, 100, 200,
+                "late", null, "UNKNOWN");
+        assertThatThrownBy(() -> meetings.insertActiveDeepgramFinalBatchIfAbsent(meeting.id(), streamId,
+                java.util.List.of(late))).isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining("ownership");
+        assertThatThrownBy(() -> meetings.setActiveDeepgramProviderSessionId(meeting.id(), streamId, "late-metadata"))
+                .isInstanceOf(IllegalStateException.class).hasMessageContaining("ownership");
+        assertThat(meetings.transcript(meeting.id())).extracting(TranscriptSegment::originalText)
+                .containsExactly("first");
+        ledger.release(requestId);
+        meetings.stop(meeting.id());
+    }
+
+    @Test
+    void topicAiUsageAndOpenAiCandidatesSurviveV10AndTopicDeletion() {
+        UUID topicId = topics.create("V10 synthetic " + UUID.randomUUID(), "Fictional test topic").id();
+        UUID termId = UUID.randomUUID();
+        jdbc.update("""
+                INSERT INTO glossary_terms(id,canonical,normalized_canonical,meaning,status,source)
+                VALUES (?,?,?,?,'PENDING','OPENAI')
+                """, termId, "SyntheticTerm", "syntheticterm" + termId, "Fictional candidate");
+        jdbc.update("INSERT INTO topic_terms(topic_id,term_id) VALUES (?,?)", topicId, termId);
+        UUID requestId = UUID.randomUUID();
+        ledger.reserve(requestId, new ReservationRequest(null, "OPENAI", "gpt-6.1-sol", "GLOSSARY",
+                "synthetic-test", new BigDecimal("0.10"), 1, topicId));
+        ledger.startDispatch(requestId);
+        ledger.settle(requestId, new Settlement(new BigDecimal("0.01"), null, 100L, 20L));
+        topics.delete(topicId);
+        assertThat(jdbc.queryForObject("SELECT topic_id FROM ai_usage_records WHERE id=?", UUID.class, requestId))
+                .isEqualTo(topicId);
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ai_usage_records WHERE id=? AND meeting_id IS NULL",
+                Integer.class, requestId)).isOne();
+    }
+
     private static String env(String name, String fallback) {
         String value = System.getenv(name);
         return value == null || value.isBlank() ? fallback : value;

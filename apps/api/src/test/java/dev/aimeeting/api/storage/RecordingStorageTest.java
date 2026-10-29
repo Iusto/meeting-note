@@ -97,4 +97,54 @@ class RecordingStorageTest {
                 .hasMessageContaining("already exists");
         assertThat(quarantine.path()).exists();
     }
+    @Test
+    void failedResumedWebmAssemblyPreservesSourceChunksAndDoesNotPublishAudio() throws Exception {
+        RecordingStorage storage = new RecordingStorage(new AppProperties("a-valid-owner-token-000000000000", List.of(), temp, false, 100));
+        UUID meetingId = UUID.randomUUID();
+        byte[] invalidWebm = new byte[] {0x1a, 0x45, (byte) 0xdf, (byte) 0xa3, 0};
+        var chunks = new java.util.ArrayList<RecordingStorage.StoredChunk>();
+        String hash = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(invalidWebm));
+        for (int sequence = 0; sequence < 2; sequence++) {
+            Path path = storage.writeChunk(meetingId, sequence, invalidWebm);
+            chunks.add(new RecordingStorage.StoredChunk(path, invalidWebm.length, hash));
+        }
+        assertThatThrownBy(() -> storage.assemble(meetingId, chunks)).isInstanceOf(java.io.IOException.class);
+        assertThat(Files.exists(storage.resolve(meetingId, "recording.bin"))).isFalse();
+        for (var chunk : chunks) assertThat(Files.readAllBytes(chunk.path())).isEqualTo(invalidWebm);
+        try (var files = Files.list(chunks.getFirst().path().getParent())) {
+            assertThat(files.map(path -> path.getFileName().toString())).containsExactlyInAnyOrder("chunk-00000000.bin", "chunk-00000001.bin");
+        }
+    }
+
+    @Test
+    void resumedWebmContainsBothIndependentRecorderSessionsWhenFfmpegIsInstalled() throws Exception {
+        try {
+            Process check = new ProcessBuilder("ffmpeg", "-version").redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                    .redirectError(ProcessBuilder.Redirect.DISCARD).start();
+            org.junit.jupiter.api.Assumptions.assumeTrue(check.waitFor() == 0, "FFmpeg must be installed for media remux validation");
+        } catch (java.io.IOException missing) {
+            org.junit.jupiter.api.Assumptions.assumeTrue(false, "FFmpeg is unavailable; media remux validation requires the Docker image");
+        }
+        Path tone = temp.resolve("tone.webm");
+        Process generate = new ProcessBuilder("ffmpeg", "-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i",
+                "sine=frequency=440:duration=1", "-c:a", "libopus", tone.toString())
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD).start();
+        assertThat(generate.waitFor()).isZero();
+        byte[] content = Files.readAllBytes(tone);
+        String hash = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(content));
+        RecordingStorage storage = new RecordingStorage(new AppProperties("a-valid-owner-token-000000000000", List.of(), temp, false, 100));
+        UUID meetingId = UUID.randomUUID();
+        var chunks = new java.util.ArrayList<RecordingStorage.StoredChunk>();
+        for (int sequence = 0; sequence < 2; sequence++) chunks.add(new RecordingStorage.StoredChunk(
+                storage.writeChunk(meetingId, sequence, content), content.length, hash));
+        var result = storage.assemble(meetingId, chunks);
+        Path decoded = temp.resolve("decoded.pcm");
+        Process decode = new ProcessBuilder("ffmpeg", "-nostdin", "-y", "-v", "error", "-i", result.path().toString(),
+                "-f", "s16le", "-ar", "16000", "-ac", "1", decoded.toString())
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD).redirectError(ProcessBuilder.Redirect.DISCARD).start();
+        assertThat(decode.waitFor()).isZero();
+        assertThat(Files.size(decoded)).isGreaterThan(60_000); // Two seconds at 16 kHz, rather than the first session only.
+        assertThat(result.bytes()).isEqualTo(Files.size(result.path()));
+    }
+
 }

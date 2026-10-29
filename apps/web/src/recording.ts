@@ -45,16 +45,18 @@ export class MicrophoneRecording {
     private store: RecordingStore,
     private transport: RecordingTransport,
     private onChange: (message: string) => void,
+    previous?: LocalRecording,
+    private baseOffsetMs = previous?.durationMs ?? 0,
   ) {
-    this.session = { meetingId, mimeType: recorder.mimeType, chunkCount: 0, durationMs: 0, stopped: false }
+    this.session = previous ? { ...previous, stopped: false } : { meetingId, mimeType: recorder.mimeType, chunkCount: 0, durationMs: 0, stopped: false }
   }
 
-  async start() {
+  async start(onStarted?: (stream: MediaStream) => Promise<void>) {
     await this.store.save(this.session)
     this.startedAt = performance.now()
     this.recorder.ondataavailable = ({ data }) => {
       if (!data.size) return
-      const endMs = Math.max(this.session.durationMs + 1, Math.round(performance.now() - this.startedAt))
+      const endMs = Math.max(this.session.durationMs + 1, this.baseOffsetMs + Math.round(performance.now() - this.startedAt))
       this.persist = this.persist.then(async () => {
         const chunk = {
           meetingId: this.session.meetingId, sequence: this.session.chunkCount,
@@ -78,6 +80,11 @@ export class MicrophoneRecording {
       track.onended = () => { this.onChange('마이크 연결이 끝났습니다. 저장된 녹음을 확인하세요.'); this.stopAutomatically() }
     })
     this.recorder.start(2000)
+    if (onStarted) {
+      try { await onStarted(this.stream) }
+      catch (caught) { return caught instanceof Error ? caught : new Error('실시간 AI 연결에 실패했습니다.') }
+    }
+    return undefined
   }
 
   sync() {
@@ -102,12 +109,12 @@ export class MicrophoneRecording {
     })
   }
 
-  stop() {
+  stop(finalize = true) {
     this.stopped ??= new Promise<void>((resolve, reject) => {
       const finish = async () => {
         try {
           await this.persist
-          this.session = { ...this.session, stopped: true }
+          this.session = { ...this.session, stopped: finalize }
           await this.store.save(this.session)
           await this.uploading
           await this.sync()

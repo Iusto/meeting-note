@@ -5,16 +5,14 @@ import org.springframework.stereotype.Component;
 
 @Component
 public class PaidApiGuard {
-    private final AppProperties properties;
+    private final AiConfiguration configuration;
 
-    public PaidApiGuard(AppProperties properties) {
-        this.properties = properties;
+    public PaidApiGuard(AiConfiguration configuration) {
+        this.configuration = configuration;
     }
 
     @PostConstruct
-    void rejectPaidModeInPhaseZero() {
-        if (properties.paidApiTestsEnabled()) {
-            throw new IllegalStateException("Paid API tests are unavailable in Phase 0");
-        }
+    void validateOptIn() {
+        if (configuration.enabled()) configuration.validatePaidMode();
     }
 }

@@ -1,6 +1,7 @@
 import { request } from './api'
 
 export interface Settings {
+  perMeetingBudgetUsd: number
   monthlyBudgetUsd: number
   warnAtPercent: number
   perMeetingMaxMinutes: number

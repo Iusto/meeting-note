@@ -8,6 +8,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.aimeeting.api.meeting.TranscriptSegment;
 import dev.aimeeting.api.provider.SummaryProvider;
 import dev.aimeeting.api.topic.TopicRepository.CorrectionAlias;
+import dev.aimeeting.api.topic.GlossaryTerm;
+import dev.aimeeting.api.topic.Topic;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
@@ -158,6 +160,42 @@ class MeetingAiPayloadsTest {
                 .hasMessage("Invalid OpenAI request input").hasNoCause();
         String tooLarge = "{\"summary\":\"" + "x".repeat(256 * 1024) + "\"}";
         assertInvalidSummary(tooLarge, List.of(segment(FIRST, "x", 0, false)));
+    }
+
+    @Test
+    void partitionsLongTranscriptsWithoutDroppingOrDuplicatingSegments() {
+        List<TranscriptSegment> transcript = new ArrayList<>();
+        for (int index = 0; index < 205; index++) {
+            transcript.add(segment(new UUID(0, index + 1L), "x".repeat(600), 0, false));
+        }
+
+        List<List<TranscriptSegment>> chunks = MeetingAiPayloads.partitionTranscript(transcript);
+
+        assertThat(chunks).hasSizeGreaterThan(2).allSatisfy(chunk -> {
+            assertThat(chunk).hasSizeLessThanOrEqualTo(100);
+            assertThat(chunk.stream().mapToInt(item -> item.displayText().length()).sum()).isLessThanOrEqualTo(50_000);
+        });
+        assertThat(chunks.stream().flatMap(List::stream).map(TranscriptSegment::id).toList())
+                .containsExactlyElementsOf(transcript.stream().map(TranscriptSegment::id).toList());
+    }
+
+    @Test
+    void validatesTopicCandidatesAsPendingReviewInput() {
+        Topic topic = new Topic(FIRST, "Manufacturing", "MES rollout");
+        GlossaryTerm existing = new GlossaryTerm(SECOND, "MES", "Execution system", List.of("엠이에스"),
+                "APPROVED", "MANUAL");
+        JsonNode request = MeetingAiPayloads.topicCandidatesRequest(topic, List.of(existing), 500);
+        assertThat(request.at("/text/format/name").asText()).isEqualTo("topic_term_candidates");
+        assertThat(request.at("/input/0/content/0/text").asText()).contains("Manufacturing", "MES rollout");
+
+        assertThat(MeetingAiPayloads.parseTopicCandidates("""
+                {"candidates":[{"canonical":"LOT","meaning":"Production trace unit",
+                  "aliases":["로트","랏"]}]}
+                """, List.of(existing))).containsExactly(
+                new MeetingAiPayloads.TopicCandidate("LOT", "Production trace unit", List.of("로트", "랏")));
+        assertThatThrownBy(() -> MeetingAiPayloads.parseTopicCandidates("""
+                {"candidates":[{"canonical":"MES","meaning":"duplicate","aliases":[]}]}
+                """, List.of(existing))).hasMessage("Invalid OpenAI response");
     }
 
     private static void assertStrictObjects(JsonNode node) {

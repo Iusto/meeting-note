@@ -9,6 +9,8 @@ import dev.aimeeting.api.config.AppProperties;
 import dev.aimeeting.api.meeting.Meeting;
 import dev.aimeeting.api.meeting.MeetingRepository;
 import dev.aimeeting.api.provider.SpeechProvider;
+import dev.aimeeting.api.provider.deepgram.DeepgramLiveSessionFactory;
+import dev.aimeeting.api.provider.deepgram.DeepgramMeetingPoc;
 import java.net.URI;
 import java.nio.file.Path;
 import java.time.OffsetDateTime;
@@ -19,14 +21,121 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicReference;
 import org.junit.jupiter.api.Test;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.web.socket.CloseStatus;
+import org.springframework.web.socket.BinaryMessage;
+import org.springframework.web.socket.TextMessage;
 import org.springframework.web.socket.WebSocketSession;
 
 class LiveWebSocketLogoutTest {
+    @Test
+    void liveSocketRelaysPcmAndGracefullyFinishesWithoutStoppingTheMeeting() throws Exception {
+        AppProperties properties = new AppProperties("a-valid-owner-token-000000000000", List.of(), Path.of("target"), false, 100);
+        SessionService auth = sessionService(properties);
+        String authSessionId = auth.login("a-valid-owner-token-000000000000");
+        UUID meetingId = UUID.randomUUID();
+        MeetingRepository meetings = mock(MeetingRepository.class);
+        SpeechProvider provider = mock(SpeechProvider.class);
+        DeepgramLiveSessionFactory deepgram = mock(DeepgramLiveSessionFactory.class);
+        DeepgramMeetingPoc live = mock(DeepgramMeetingPoc.class);
+        when(meetings.find(meetingId)).thenReturn(new Meeting(meetingId, "live", "STARTED", "LIVE", null, null, null, 1));
+        when(live.streamSessionId()).thenReturn(UUID.randomUUID());
+        when(live.completion()).thenReturn(new CompletableFuture<>());
+        when(live.sendAudio(any())).thenReturn(CompletableFuture.completedFuture(null));
+        when(live.finish()).thenReturn(new CompletableFuture<>());
+        when(deepgram.open(eq(meetingId), eq(1_250L), any())).thenReturn(CompletableFuture.completedFuture(live));
+        LiveWebSocketHandler handler = new LiveWebSocketHandler(meetings, provider, deepgram, new ObjectMapper(), auth);
+        WebSocketSession socket = socket(authSessionId, meetingId, true);
+
+        handler.afterConnectionEstablished(socket);
+        handler.handleBinaryMessage(socket, new BinaryMessage(new byte[] {1, 0, 2, 0}));
+        handler.afterConnectionClosed(socket, CloseStatus.NORMAL);
+
+        verify(live).sendAudio(new byte[] {1, 0, 2, 0});
+        verify(live).finish();
+        verify(live, never()).close();
+        verify(meetings, never()).closeStreamSession(any(), any());
+        verify(meetings, never()).stop(meetingId);
+        verifyNoInteractions(provider);
+    }
+
+    @Test
+    void liveProviderStartupFailureEmitsTerminalErrorAndPreservesMeeting() throws Exception {
+        AppProperties properties = new AppProperties("a-valid-owner-token-000000000000", List.of(), Path.of("target"), false, 100);
+        SessionService auth = sessionService(properties);
+        String authSessionId = auth.login("a-valid-owner-token-000000000000");
+        UUID meetingId = UUID.randomUUID();
+        MeetingRepository meetings = mock(MeetingRepository.class);
+        SpeechProvider provider = mock(SpeechProvider.class);
+        DeepgramLiveSessionFactory deepgram = mock(DeepgramLiveSessionFactory.class);
+        when(meetings.find(meetingId)).thenReturn(new Meeting(meetingId, "live", "STARTED", "LIVE", null, null, null, 1));
+        when(deepgram.open(eq(meetingId), eq(0L), any()))
+                .thenReturn(CompletableFuture.failedFuture(new IllegalStateException("synthetic provider failure")));
+        LiveWebSocketHandler handler = new LiveWebSocketHandler(meetings, provider, deepgram, new ObjectMapper(), auth);
+        WebSocketSession socket = socket(authSessionId, meetingId, false);
+
+        handler.afterConnectionEstablished(socket);
+
+        verify(socket).sendMessage(argThat(message -> message instanceof TextMessage text
+                && text.getPayload().contains("\"type\":\"stream.error\"")));
+        verify(socket).close(any(CloseStatus.class));
+        verify(meetings, never()).stop(meetingId);
+        verifyNoInteractions(provider);
+    }
+
+    @Test
+    void liveAdmissionFailureEmitsTerminalErrorAndPreservesMeeting() throws Exception {
+        AppProperties properties = new AppProperties("a-valid-owner-token-000000000000", List.of(), Path.of("target"), false, 100);
+        SessionService auth = sessionService(properties);
+        String authSessionId = auth.login("a-valid-owner-token-000000000000");
+        UUID meetingId = UUID.randomUUID();
+        MeetingRepository meetings = mock(MeetingRepository.class);
+        SpeechProvider provider = mock(SpeechProvider.class);
+        DeepgramLiveSessionFactory deepgram = mock(DeepgramLiveSessionFactory.class);
+        when(meetings.find(meetingId)).thenReturn(new Meeting(meetingId, "live", "STARTED", "LIVE", null, null, null, 1));
+        when(deepgram.open(eq(meetingId), eq(0L), any())).thenThrow(new IllegalStateException("MONTHLY_BUDGET_EXHAUSTED"));
+        LiveWebSocketHandler handler = new LiveWebSocketHandler(meetings, provider, deepgram, new ObjectMapper(), auth);
+        WebSocketSession socket = socket(authSessionId, meetingId, false);
+
+        handler.afterConnectionEstablished(socket);
+
+        verify(socket).sendMessage(argThat(message -> message instanceof TextMessage text
+                && text.getPayload().contains("\"type\":\"stream.error\"")));
+        verify(socket).sendMessage(argThat(message -> message instanceof TextMessage text
+                && text.getPayload().contains("월 예산이 부족합니다")));
+        verify(socket).close(any(CloseStatus.class));
+        verify(meetings, never()).stop(meetingId);
+        verifyNoInteractions(provider);
+    }
+
+    @Test
+    void logoutImmediatelyCancelsLiveProviderAndStopsTheMeeting() throws Exception {
+        AppProperties properties = new AppProperties("a-valid-owner-token-000000000000", List.of(), Path.of("target"), false, 100);
+        SessionService auth = sessionService(properties);
+        String authSessionId = auth.login("a-valid-owner-token-000000000000");
+        UUID meetingId = UUID.randomUUID();
+        MeetingRepository meetings = mock(MeetingRepository.class);
+        SpeechProvider provider = mock(SpeechProvider.class);
+        DeepgramLiveSessionFactory deepgram = mock(DeepgramLiveSessionFactory.class);
+        DeepgramMeetingPoc live = mock(DeepgramMeetingPoc.class);
+        when(meetings.find(meetingId)).thenReturn(new Meeting(meetingId, "live", "STARTED", "LIVE", null, null, null, 1));
+        when(live.streamSessionId()).thenReturn(UUID.randomUUID());
+        when(live.completion()).thenReturn(new CompletableFuture<>());
+        when(deepgram.open(eq(meetingId), eq(0L), any())).thenReturn(CompletableFuture.completedFuture(live));
+        LiveWebSocketHandler handler = new LiveWebSocketHandler(meetings, provider, deepgram, new ObjectMapper(), auth);
+        WebSocketSession socket = socket(authSessionId, meetingId, false);
+        handler.afterConnectionEstablished(socket);
+
+        auth.logout(authSessionId);
+
+        verify(live).close();
+        verify(live, never()).finish();
+        verify(meetings).stop(meetingId);
+        verify(socket).close(any(CloseStatus.class));
+    }
+
     @Test
     void listenerFailureDoesNotUndoSessionRevocation() {
         AppProperties properties = new AppProperties("a-valid-owner-token-000000000000", List.of(), Path.of("target"), false, 100);
@@ -40,7 +149,7 @@ class LiveWebSocketLogoutTest {
     }
 
     @Test
-    void logoutWaitsForProviderStartupAndThenStopsIt() throws Exception {
+    void logoutDoesNotHoldTheLifecycleLockAcrossProviderStartup() throws Exception {
         AppProperties properties = new AppProperties("a-valid-owner-token-000000000000", List.of(), Path.of("target"), false, 100);
         SessionService auth = sessionService(properties);
         String authSessionId = auth.login("a-valid-owner-token-000000000000");
@@ -73,29 +182,15 @@ class LiveWebSocketLogoutTest {
             }
         });
         if (!providerStarted.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("Provider startup did not begin");
-        CountDownLatch logoutTaskEntered = new CountDownLatch(1);
-        AtomicReference<Thread> logoutThread = new AtomicReference<>();
-        CompletableFuture<Void> logout = CompletableFuture.runAsync(() -> {
-            logoutThread.set(Thread.currentThread());
-            logoutTaskEntered.countDown();
-            auth.logout(authSessionId);
-        });
-        if (!logoutTaskEntered.await(5, TimeUnit.SECONDS)) throw new IllegalStateException("Logout task did not start");
-        long waiterDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
-        while (logoutThread.get().getState() != Thread.State.WAITING && System.nanoTime() < waiterDeadline) {
-            Thread.onSpinWait();
-        }
-        if (logoutThread.get().getState() != Thread.State.WAITING) {
-            throw new IllegalStateException("Logout did not wait on the lifecycle guard");
-        }
-        if (!auth.isValid(authSessionId)) throw new IllegalStateException("Session was revoked before provider startup completed");
+        CompletableFuture<Void> logout = CompletableFuture.runAsync(() -> auth.logout(authSessionId));
+        logout.get(5, TimeUnit.SECONDS);
+        if (auth.isValid(authSessionId)) throw new IllegalStateException("Logout was not committed during provider startup");
+        verify(provider).stopMeeting(meetingId);
+        verify(socket).close(any(CloseStatus.class));
         continueProvider.countDown();
 
         connection.get(5, TimeUnit.SECONDS);
-        logout.get(5, TimeUnit.SECONDS);
         verify(provider).stream(eq(meetingId), eq(streamSessionId), any());
-        verify(provider).stopMeeting(meetingId);
-        verify(socket).close(any(CloseStatus.class));
     }
 
     @Test
@@ -234,6 +329,17 @@ class LiveWebSocketLogoutTest {
 
     private SessionService sessionService(AppProperties properties) {
         return new SessionService(properties, authDatabase());
+    }
+
+    private WebSocketSession socket(String authSessionId, UUID meetingId, boolean offset) {
+        WebSocketSession socket = mock(WebSocketSession.class);
+        HashMap<String, Object> attributes = new HashMap<>();
+        attributes.put("authSessionId", authSessionId);
+        when(socket.getAttributes()).thenReturn(attributes);
+        when(socket.getUri()).thenReturn(URI.create("ws://localhost/api/v1/meetings/" + meetingId
+                + "/live" + (offset ? "?audioOffsetMs=1250" : "")));
+        when(socket.isOpen()).thenReturn(true);
+        return socket;
     }
 
     private JdbcTemplate authDatabase() {

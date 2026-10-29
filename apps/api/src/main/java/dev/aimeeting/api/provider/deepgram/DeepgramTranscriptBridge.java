@@ -21,17 +21,25 @@ public final class DeepgramTranscriptBridge implements AutoCloseable {
     private final long audioOffsetMs;
     private final MeetingRepository meetings;
     private final Consumer<SpeechEvent> consumer;
+    private final boolean requireActiveClaim;
     private final AtomicLong sequence;
     private boolean closed;
 
     public DeepgramTranscriptBridge(UUID meetingId, UUID streamSessionId, long audioOffsetMs,
                                     MeetingRepository meetings, Consumer<SpeechEvent> consumer) {
+        this(meetingId, streamSessionId, audioOffsetMs, meetings, consumer, false);
+    }
+
+    DeepgramTranscriptBridge(UUID meetingId, UUID streamSessionId, long audioOffsetMs,
+                             MeetingRepository meetings, Consumer<SpeechEvent> consumer,
+                             boolean requireActiveClaim) {
         this.meetingId = Objects.requireNonNull(meetingId, "meetingId");
         this.streamSessionId = Objects.requireNonNull(streamSessionId, "streamSessionId");
         if (audioOffsetMs < 0) throw new IllegalArgumentException("audioOffsetMs must be nonnegative");
         this.audioOffsetMs = audioOffsetMs;
         this.meetings = Objects.requireNonNull(meetings, "meetings");
         this.consumer = Objects.requireNonNull(consumer, "consumer");
+        this.requireActiveClaim = requireActiveClaim;
         this.sequence = new AtomicLong(meetings.maxTranscriptSequence(meetingId));
     }
 
@@ -56,7 +64,9 @@ public final class DeepgramTranscriptBridge implements AutoCloseable {
             inputs.add(new FinalSegmentInput(eventId, nextSequence, offset(part.startMs()), offset(part.endMs()),
                     part.text(), part.speakerLabel(), part.speakerStatus()));
         }
-        List<TranscriptSegment> inserted = meetings.insertFinalBatchIfAbsent(meetingId, inputs);
+        List<TranscriptSegment> inserted = requireActiveClaim
+                ? meetings.insertActiveDeepgramFinalBatchIfAbsent(meetingId, streamSessionId, inputs)
+                : meetings.insertFinalBatchIfAbsent(meetingId, inputs);
         inserted.stream().map(this::finalEvent).forEach(consumer);
     }
 

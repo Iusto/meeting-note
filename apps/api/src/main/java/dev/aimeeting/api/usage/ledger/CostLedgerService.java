@@ -53,7 +53,20 @@ public class CostLedgerService {
         rejectActiveCallerTransaction();
         Objects.requireNonNull(requestId, "requestId");
         ReservationRequest request = validate(input);
-        return requiresNew.execute(status -> reserveInTransaction(requestId, request));
+        return requiresNew.execute(status -> reserveInTransaction(requestId, request, null, 0));
+    }
+
+    /** All reconnects and LLM requests share one meeting allowance, across UTC months. */
+    public LedgerEntry reserveBounded(UUID requestId, ReservationRequest input,
+                                     BigDecimal maximumMeetingUsd, long maximumMeetingSeconds) {
+        rejectActiveCallerTransaction();
+        Objects.requireNonNull(requestId, "requestId");
+        ReservationRequest request = validate(input);
+        if (request.meetingId() == null || maximumMeetingSeconds <= 0) {
+            throw bad("INVALID_RESERVATION", "A bounded meeting reservation requires a meeting and time limit");
+        }
+        BigDecimal cap = boundedMoney(maximumMeetingUsd, "maximumMeetingUsd", true, false);
+        return requiresNew.execute(status -> reserveInTransaction(requestId, request, cap, maximumMeetingSeconds));
     }
 
     public LedgerEntry startDispatch(UUID requestId) {
@@ -67,7 +80,7 @@ public class CostLedgerService {
             if (!entry.reservationMonth().equals(current)) {
                 throw conflict("RESERVATION_MONTH_EXPIRED", "Reservation must be recreated in the current UTC month");
             }
-            lockMeeting(entry.meetingId());
+            lockSubject(entry.meetingId(), entry.topicId());
             Integer maxMinutes = jdbc.queryForObject("SELECT per_meeting_max_minutes FROM app_settings WHERE id=1",
                     Integer.class);
             if (maxMinutes == null || entry.maximumAudioSeconds() > Math.multiplyExact(maxMinutes.longValue(), 60L)) {
@@ -158,10 +171,16 @@ public class CostLedgerService {
         return accumulate(rowsForMonth(month));
     }
 
+    public LedgerTotals totalsForMeeting(UUID meetingId) {
+        Objects.requireNonNull(meetingId, "meetingId");
+        return accumulate(jdbc.query("SELECT * FROM ai_usage_records WHERE meeting_id=?", this::mapEntry, meetingId));
+    }
+
     public Map<UUID, LedgerTotals> byMeeting(YearMonth month) {
         Objects.requireNonNull(month, "month");
         Map<UUID, TotalsBuilder> builders = new HashMap<>();
         for (LedgerEntry entry : rowsForMonth(month)) {
+            if (entry.meetingId() == null) continue;
             builders.computeIfAbsent(entry.meetingId(), ignored -> new TotalsBuilder()).add(entry);
         }
         Map<UUID, LedgerTotals> result = new HashMap<>();
@@ -169,18 +188,38 @@ public class CostLedgerService {
         return Map.copyOf(result);
     }
 
-    private LedgerEntry reserveInTransaction(UUID requestId, ReservationRequest request) {
+    private LedgerEntry reserveInTransaction(UUID requestId, ReservationRequest request,
+                                            BigDecimal maximumMeetingUsd, long maximumMeetingSeconds) {
         lockSettings();
         LedgerEntry existing = findOptional(requestId);
         if (existing != null) {
             if (sameReservation(existing, request)) return existing;
             throw conflict("RESERVATION_MISMATCH", "Request id was already used for a different reservation");
         }
-        lockMeeting(request.meetingId());
+        lockSubject(request.meetingId(), request.topicId());
         Integer maxMinutes = jdbc.queryForObject("SELECT per_meeting_max_minutes FROM app_settings WHERE id=1",
                 Integer.class);
         if (maxMinutes == null || request.maximumAudioSeconds() > Math.multiplyExact(maxMinutes.longValue(), 60L)) {
             throw bad("AUDIO_LIMIT_EXCEEDED", "maximumAudioSeconds exceeds the per-meeting limit");
+        }
+        if (maximumMeetingUsd != null) {
+            List<LedgerEntry> previous = jdbc.query("SELECT * FROM ai_usage_records WHERE meeting_id=?",
+                    this::mapEntry, request.meetingId());
+            if (accumulate(previous).budgetCommittedUsd().add(request.reservedUsd()).compareTo(maximumMeetingUsd) > 0) {
+                throw conflict("MEETING_BUDGET_EXCEEDED", "Meeting AI budget is exhausted");
+            }
+            if ("TRANSCRIPTION".equals(request.operation())) {
+                long used = 0;
+                for (LedgerEntry entry : previous) {
+                    if (!"TRANSCRIPTION".equals(entry.operation()) || entry.state() == UsageState.RELEASED) continue;
+                    used = Math.addExact(used, entry.state() == UsageState.SETTLED && entry.measuredAudioSeconds() != null
+                            ? entry.measuredAudioSeconds() : entry.maximumAudioSeconds());
+                }
+                long cap = Math.min(maximumMeetingSeconds, Math.multiplyExact(maxMinutes.longValue(), 60L));
+                if (used > cap || request.maximumAudioSeconds() > cap - used) {
+                    throw conflict("MEETING_AUDIO_LIMIT_EXCEEDED", "Meeting transcription time limit is exhausted");
+                }
+            }
         }
         YearMonth month = YearMonth.from(OffsetDateTime.now(clock));
         BigDecimal budget = monthlyBudget();
@@ -191,11 +230,11 @@ public class CostLedgerService {
         jdbc.update("""
                 INSERT INTO ai_usage_records(
                   id,meeting_id,provider,model,operation,price_version,state,reservation_month,reserved_usd,
-                  maximum_audio_seconds,created_at,updated_at)
-                VALUES (?,?,?,?,?,?,'RESERVED',?,?,?,?,?)
+                  maximum_audio_seconds,created_at,updated_at,topic_id)
+                VALUES (?,?,?,?,?,?,'RESERVED',?,?,?,?,?,?)
                 """, requestId, request.meetingId(), request.provider(), request.model(), request.operation(),
                 request.priceVersion(), Date.valueOf(month.atDay(1)), request.reservedUsd(),
-                request.maximumAudioSeconds(), now, now);
+                request.maximumAudioSeconds(), now, now, request.topicId());
         return find(requestId);
     }
 
@@ -211,6 +250,16 @@ public class CostLedgerService {
         }
     }
 
+    private void lockSubject(UUID meetingId, UUID topicId) {
+        if (meetingId != null) {
+            lockMeeting(meetingId);
+            return;
+        }
+        List<UUID> rows = jdbc.query("SELECT id FROM meeting_topics WHERE id=? FOR UPDATE",
+                (rs, row) -> rs.getObject("id", UUID.class), topicId);
+        if (rows.isEmpty()) throw new ApiException(HttpStatus.NOT_FOUND, "TOPIC_NOT_FOUND", "Topic not found");
+    }
+
     private BigDecimal monthlyBudget() {
         return money(jdbc.queryForObject("SELECT monthly_budget_usd FROM app_settings WHERE id=1", BigDecimal.class));
     }
@@ -223,7 +272,7 @@ public class CostLedgerService {
         return jdbc.query("""
                 SELECT id,meeting_id,provider,model,operation,price_version,state,reservation_month,
                        reserved_usd,estimated_usd,actual_usd,actual_source,maximum_audio_seconds,
-                       measured_audio_seconds,input_tokens,output_tokens,created_at,updated_at
+                       measured_audio_seconds,input_tokens,output_tokens,created_at,updated_at,topic_id
                   FROM ai_usage_records WHERE reservation_month=? ORDER BY created_at,id
                 """, this::mapEntry, Date.valueOf(month.atDay(1)));
     }
@@ -232,7 +281,7 @@ public class CostLedgerService {
         List<LedgerEntry> rows = jdbc.query("""
                 SELECT id,meeting_id,provider,model,operation,price_version,state,reservation_month,
                        reserved_usd,estimated_usd,actual_usd,actual_source,maximum_audio_seconds,
-                       measured_audio_seconds,input_tokens,output_tokens,created_at,updated_at
+                       measured_audio_seconds,input_tokens,output_tokens,created_at,updated_at,topic_id
                   FROM ai_usage_records WHERE id=? FOR UPDATE
                 """, this::mapEntry, id);
         if (rows.isEmpty()) throw new ApiException(HttpStatus.NOT_FOUND, "USAGE_REQUEST_NOT_FOUND", "Usage request not found");
@@ -249,7 +298,7 @@ public class CostLedgerService {
         List<LedgerEntry> rows = jdbc.query("""
                 SELECT id,meeting_id,provider,model,operation,price_version,state,reservation_month,
                        reserved_usd,estimated_usd,actual_usd,actual_source,maximum_audio_seconds,
-                       measured_audio_seconds,input_tokens,output_tokens,created_at,updated_at
+                       measured_audio_seconds,input_tokens,output_tokens,created_at,updated_at,topic_id
                   FROM ai_usage_records WHERE id=?
                 """, this::mapEntry, id);
         return rows.isEmpty() ? null : rows.getFirst();
@@ -264,7 +313,8 @@ public class CostLedgerService {
                 nullableMoney(rs.getBigDecimal("actual_usd")), rs.getString("actual_source"),
                 rs.getLong("maximum_audio_seconds"), nullableLong(rs, "measured_audio_seconds"),
                 nullableLong(rs, "input_tokens"), nullableLong(rs, "output_tokens"),
-                rs.getObject("created_at", OffsetDateTime.class), rs.getObject("updated_at", OffsetDateTime.class));
+                rs.getObject("created_at", OffsetDateTime.class), rs.getObject("updated_at", OffsetDateTime.class),
+                rs.getObject("topic_id", UUID.class));
     }
 
     private void updateState(UUID id, UsageState state) {
@@ -278,12 +328,17 @@ public class CostLedgerService {
     }
 
     private ReservationRequest validate(ReservationRequest request) {
-        if (request == null || request.meetingId() == null) throw bad("INVALID_RESERVATION", "meetingId is required");
+        if (request == null || (request.meetingId() == null) == (request.topicId() == null)) {
+            throw bad("INVALID_RESERVATION", "Exactly one meetingId or topicId is required");
+        }
+        if (request.topicId() != null && !"GLOSSARY".equals(request.operation())) {
+            throw bad("INVALID_RESERVATION", "Topic reservations must generate glossary candidates");
+        }
         if (request.maximumAudioSeconds() <= 0) throw bad("INVALID_RESERVATION", "maximumAudioSeconds must be positive");
         return new ReservationRequest(request.meetingId(), text(request.provider(), "provider", PROVIDER_MAX),
                 text(request.model(), "model", MODEL_MAX), text(request.operation(), "operation", OPERATION_MAX),
                 text(request.priceVersion(), "priceVersion", PRICE_VERSION_MAX),
-                boundedMoney(request.reservedUsd(), "reservedUsd", true, true), request.maximumAudioSeconds());
+                boundedMoney(request.reservedUsd(), "reservedUsd", true, true), request.maximumAudioSeconds(), request.topicId());
     }
 
     private Settlement validate(Settlement settlement) {
@@ -334,7 +389,8 @@ public class CostLedgerService {
     }
 
     private static boolean sameReservation(LedgerEntry entry, ReservationRequest request) {
-        return entry.meetingId().equals(request.meetingId()) && entry.provider().equals(request.provider())
+        return Objects.equals(entry.meetingId(), request.meetingId()) && Objects.equals(entry.topicId(), request.topicId())
+                && entry.provider().equals(request.provider())
                 && entry.model().equals(request.model()) && entry.operation().equals(request.operation())
                 && entry.priceVersion().equals(request.priceVersion())
                 && entry.reservedUsd().compareTo(request.reservedUsd()) == 0

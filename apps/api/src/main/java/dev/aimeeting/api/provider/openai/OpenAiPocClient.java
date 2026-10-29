@@ -19,7 +19,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Flow;
 import java.util.concurrent.TimeUnit;
 
-/** Stateless, opt-in POC transport. Deliberately not a Spring bean or application entry point. */
+/** Stateless opt-in Responses API transport. The application service owns production activation. */
 public final class OpenAiPocClient {
     private static final URI ENDPOINT = URI.create("https://api.openai.com/v1/responses");
     private static final ObjectMapper JSON = new ObjectMapper();

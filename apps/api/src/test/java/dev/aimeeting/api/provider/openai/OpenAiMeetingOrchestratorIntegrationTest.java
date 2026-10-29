@@ -3,12 +3,16 @@ package dev.aimeeting.api.provider.openai;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.aimeeting.api.config.AiConfiguration;
+import dev.aimeeting.api.config.AppProperties;
 import dev.aimeeting.api.correction.CorrectionService;
 import dev.aimeeting.api.meeting.InputSource;
 import dev.aimeeting.api.meeting.Meeting;
 import dev.aimeeting.api.meeting.MeetingRepository;
 import dev.aimeeting.api.meeting.TranscriptSegment;
 import dev.aimeeting.api.summary.SummaryService;
+import dev.aimeeting.api.summary.MeetingSummary;
 import dev.aimeeting.api.provider.SummaryProvider;
 import dev.aimeeting.api.topic.GlossaryTerm;
 import dev.aimeeting.api.topic.Topic;
@@ -16,6 +20,7 @@ import dev.aimeeting.api.topic.TopicService;
 import dev.aimeeting.api.usage.ledger.CostLedgerService;
 import dev.aimeeting.api.web.ApiException;
 import java.math.BigDecimal;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
@@ -26,6 +31,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.mock.env.MockEnvironment;
 
 @SpringBootTest(properties = "spring.datasource.url=jdbc:h2:mem:openai-orchestration;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DB_CLOSE_DELAY=-1")
 class OpenAiMeetingOrchestratorIntegrationTest {
@@ -287,8 +293,103 @@ class OpenAiMeetingOrchestratorIntegrationTest {
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ai_usage_records", Integer.class)).isZero();
     }
 
+    @Test
+    void summarizesEveryChunkThenReducesWithOriginalEvidence() throws Exception {
+        Topic topic = topics.create("Long " + UUID.randomUUID(), "offline");
+        Meeting meeting = meetings.create("Long meeting", InputSource.MOCK, topic.id());
+        meetings.start(meeting.id());
+        java.util.ArrayList<TranscriptSegment> transcript = new java.util.ArrayList<>();
+        for (int index = 0; index < 101; index++) {
+            transcript.add(meetings.insertFinal(meeting.id(), "long-" + index, index + 1L,
+                    index * 1_000L, (index + 1L) * 1_000L, "segment " + index + " " + "x".repeat(300),
+                    "speaker-0"));
+        }
+        meetings.stop(meeting.id());
+        AtomicInteger calls = new AtomicInteger();
+        ObjectMapper json = new ObjectMapper();
+        OpenAiMeetingOrchestrator orchestrator = orchestrator(payload -> {
+            calls.incrementAndGet();
+            String schema = payload.at("/text/format/name").asText();
+            if ("meeting_summary_synthesis".equals(schema)) {
+                return CompletableFuture.completedFuture(completed(summaryJson(transcript.getFirst().id()), 20, 5));
+            }
+            String text = payload.at("/input/0/content/0/text").asText();
+            try {
+                UUID first = UUID.fromString(json.readTree(text.substring(text.indexOf('{')))
+                        .at("/segments/0/id").asText());
+                return CompletableFuture.completedFuture(completed(summaryJson(first), 20, 5));
+            } catch (Exception invalid) {
+                return CompletableFuture.failedFuture(invalid);
+            }
+        });
+
+        MeetingSummary result = orchestrator.generateSummary(UUID.randomUUID(), meeting.id()).join();
+
+        assertThat(calls).hasValue(3);
+        assertThat(result.content().sourceSegmentIds()).containsExactly(transcript.getFirst().id());
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ai_usage_records WHERE meeting_id=?", Integer.class,
+                meeting.id())).isEqualTo(3);
+    }
+
+    @Test
+    void storesRealTopicCandidatesPendingWithoutInventingAMeetingSubject() {
+        Topic topic = topics.create("Candidate " + UUID.randomUUID(), "Manufacturing");
+        String output = """
+                {"candidates":[{"canonical":"LOT","meaning":"Production trace unit","aliases":["로트"]}]}
+                """;
+        OpenAiMeetingOrchestrator orchestrator = new OpenAiMeetingOrchestrator(ledger, summaries, corrections,
+                topics, limits, "synthetic-v1", new BigDecimal("1.00"), 14_400,
+                payload -> CompletableFuture.completedFuture(completed(output, 20, 5)));
+        UUID requestId = UUID.randomUUID();
+
+        List<GlossaryTerm> result = orchestrator.generateTopicCandidates(requestId, topic.id()).join();
+
+        assertThat(result).singleElement().satisfies(term -> {
+            assertThat(term.status()).isEqualTo("PENDING");
+            assertThat(term.source()).isEqualTo("OPENAI");
+        });
+        assertThat(jdbc.queryForObject("SELECT meeting_id FROM ai_usage_records WHERE id=?", UUID.class, requestId))
+                .isNull();
+        assertThat(jdbc.queryForObject("SELECT topic_id FROM ai_usage_records WHERE id=?", UUID.class, requestId))
+                .isEqualTo(topic.id());
+    }
+
+    @Test
+    void applicationServiceUsesInjectedPaidTransportAndRejectsConcurrentCharge() {
+        Fixture fixture = fixture("application alias");
+        CompletableFuture<OpenAiPocClient.Response> pending = new CompletableFuture<>();
+        AtomicInteger calls = new AtomicInteger();
+        MeetingAiApplicationService application = new MeetingAiApplicationService(paidConfiguration(), ledger,
+                summaries, corrections, topics, payload -> {
+                    calls.incrementAndGet();
+                    return pending;
+                });
+
+        CompletableFuture<MeetingSummary> first = application.generateSummary(fixture.meeting().id());
+        CompletableFuture<MeetingSummary> concurrent = application.generateSummary(fixture.meeting().id());
+
+        assertThatThrownBy(concurrent::join).hasRootCauseInstanceOf(ApiException.class)
+                .hasRootCauseMessage("Another AI request is already running");
+        pending.complete(completed(summaryJson(fixture.segment().id()), 20, 5));
+        assertThat(first.join().provider()).isEqualTo("OPENAI");
+        assertThat(calls).hasValue(1);
+    }
+
     private OpenAiMeetingOrchestrator orchestrator(OpenAiMeetingOrchestrator.Transport transport) {
         return orchestrator(limits, transport);
+    }
+
+    private AiConfiguration paidConfiguration() {
+        AppProperties properties = new AppProperties("a-valid-owner-token-000000000000", List.of(),
+                Path.of("target"), true, 100);
+        MockEnvironment environment = new MockEnvironment()
+                .withProperty("OPENAI_API_KEY", "offline-test-key")
+                .withProperty("DEEPGRAM_API_KEY", "offline-test-key")
+                .withProperty("ai.maximum-meeting-usd", "1.00")
+                .withProperty("ai.output-token-cap", "100")
+                .withProperty("ai.timeout-seconds", "5")
+                .withProperty("ai.price-version", "offline-test");
+        return new AiConfiguration(properties, environment);
     }
 
     private OpenAiMeetingOrchestrator orchestrator(OpenAiPocLimits requestLimits,

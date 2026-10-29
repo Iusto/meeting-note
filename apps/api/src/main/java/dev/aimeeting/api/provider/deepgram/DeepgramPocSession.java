@@ -243,6 +243,22 @@ public final class DeepgramPocSession implements WebSocket.Listener, AutoCloseab
         return finish.copy();
     }
 
+    public CompletableFuture<Void> keepAlive() {
+        CompletableFuture<Void> sent = new CompletableFuture<>();
+        synchronized (lock) {
+            if (terminated || finishing) {
+                return CompletableFuture.failedFuture(sanitized("Deepgram session is not accepting control messages"));
+            }
+            if (pendingMessages + outbound.size() >= MAX_PENDING_MESSAGES) {
+                terminate(StopReason.BACKPRESSURE);
+                return CompletableFuture.failedFuture(sanitized("Deepgram send queue is full"));
+            }
+            outbound.addLast(Outbound.control(KEEPALIVE, sent));
+        }
+        drain();
+        return sent;
+    }
+
     public CompletableFuture<StopReason> completion() {
         return completion.copy();
     }
@@ -588,6 +604,10 @@ public final class DeepgramPocSession implements WebSocket.Listener, AutoCloseab
 
         private static Outbound control(String control) {
             return new Outbound(null, control, null);
+        }
+
+        private static Outbound control(String control, CompletableFuture<Void> result) {
+            return new Outbound(null, control, result);
         }
     }
 }

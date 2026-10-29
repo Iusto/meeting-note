@@ -203,11 +203,30 @@ class RecordingControllerIntegrationTest {
                 .andExpect(status().isOk()).andExpect(jsonPath("$.state").value("UPLOADING"));
     }
 
+    @Test
+    void liveAiMeetingPreservesTheIndependentBrowserRecordingPath() throws Exception {
+        UUID meetingId = createAndStartMeeting("LIVE");
+        byte[] audio = bytes("live-ai-browser-recording");
+
+        mvc.perform(chunk(meetingId, 0, 0, 25, sha(audio), "audio/webm", audio))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.sequence").value(0));
+        mvc.perform(post("/api/v1/meetings/{id}/recording-complete", meetingId).cookie(session)
+                        .header("Origin", ORIGIN).contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"chunkCount\":1}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.state").value("COMPLETED"));
+        mvc.perform(get("/api/v1/meetings/{id}/recording/audio", meetingId).cookie(session))
+                .andExpect(status().isOk()).andExpect(header().string("Content-Type", "audio/webm"));
+    }
+
     private UUID createAndStartLocalMeeting() throws Exception {
+        return createAndStartMeeting("LOCAL_RECORDING");
+    }
+
+    private UUID createAndStartMeeting(String inputSource) throws Exception {
         MvcResult created = mvc.perform(post("/api/v1/meetings").cookie(session).header("Origin", ORIGIN)
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"title\":\"Local recording\",\"inputSource\":\"LOCAL_RECORDING\"}"))
-                .andExpect(status().isOk()).andExpect(jsonPath("$.inputSource").value("LOCAL_RECORDING"))
+                        .content("{\"title\":\"Browser recording\",\"inputSource\":\"" + inputSource + "\"}"))
+                .andExpect(status().isOk()).andExpect(jsonPath("$.inputSource").value(inputSource))
                 .andReturn();
         JsonNode json = mapper.readTree(created.getResponse().getContentAsByteArray());
         UUID id = UUID.fromString(json.get("id").asText());

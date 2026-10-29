@@ -152,4 +152,63 @@ describe('durable recording uploads', () => {
     expect(complete).toHaveBeenCalledTimes(2)
     expect(await store.get('meeting')).toBeUndefined()
   })
+
+  it('keeps the original recording active when the independent live STT startup fails', async () => {
+    const { store, chunks } = memoryStore()
+    await store.removeSession('meeting')
+    chunks.length = 0
+    const track = { stop: vi.fn(), onended: null }
+    const recorder = {
+      mimeType: 'audio/webm', state: 'inactive', onstop: () => {},
+      ondataavailable: (event: { data: Blob }) => { void event },
+      start: vi.fn(() => { recorder.state = 'recording' }),
+      stop: vi.fn(() => { recorder.state = 'inactive'; queueMicrotask(() => recorder.onstop()) }),
+    }
+    const engine = new MicrophoneRecording(recorder as unknown as MediaRecorder,
+      { getTracks: () => [track], getAudioTracks: () => [track] } as unknown as MediaStream,
+      'meeting', store, { upload: vi.fn().mockResolvedValue({}), complete: vi.fn().mockResolvedValue({}) }, vi.fn())
+
+    const startupError = await engine.start(async () => { throw new Error('STT unavailable') })
+    expect(startupError?.message).toBe('STT unavailable')
+    expect(engine.isActive()).toBe(true)
+    expect(track.stop).not.toHaveBeenCalled()
+    recorder.ondataavailable({ data: new Blob(['original audio']) })
+    await engine.stop()
+    expect(track.stop).toHaveBeenCalled()
+  })
+})
+
+
+describe('interrupted recording resume', () => {
+  it('uploads old chunks and appends new chunks without finalizing during suspension', async () => {
+    const { store } = memoryStore()
+    const previous = { ...(await store.get('meeting'))!, stopped: false }
+    await store.save(previous)
+    const upload = vi.fn().mockResolvedValue({})
+    const complete = vi.fn().mockResolvedValue({})
+    const track = { stop: vi.fn(), onended: null }
+    const recorder = {
+      mimeType: 'audio/webm', state: 'inactive',
+      ondataavailable: (event: { data: Blob }) => { void event }, onstop: () => {},
+      start: () => { recorder.state = 'recording' },
+      stop: () => {
+        recorder.state = 'inactive'
+        queueMicrotask(() => { recorder.ondataavailable({ data: new Blob(['resumed']) }); recorder.onstop() })
+      },
+    }
+    const stream = { getTracks: () => [track], getAudioTracks: () => [track] }
+    const engine = new MicrophoneRecording(recorder as unknown as MediaRecorder, stream as unknown as MediaStream,
+      'meeting', store, { upload, complete }, () => {}, previous)
+    await engine.start()
+    await engine.stop(false)
+    expect(upload.mock.calls.map(([chunk]) => chunk.sequence)).toEqual([0, 1, 2])
+    expect(upload.mock.calls[2][0].startMs).toBe(4000)
+    expect(upload.mock.calls[2][0].endMs).toBeGreaterThan(4000)
+    expect(complete).not.toHaveBeenCalled()
+    expect(await store.get('meeting')).toMatchObject({ chunkCount: 3, stopped: false })
+    expect(track.stop).toHaveBeenCalled()
+    await store.save({ ...(await store.get('meeting'))!, stopped: true })
+    await syncRecording('meeting', store, { upload, complete })
+    expect(complete).toHaveBeenCalledWith(3)
+  })
 })

@@ -57,6 +57,69 @@ class CostLedgerIntegrationTest {
     }
 
     @Test
+    void topicCandidatesConsumeMonthlyBudgetWithoutAFakeMeeting() {
+        UUID topicId = UUID.randomUUID();
+        jdbc.update("INSERT INTO meeting_topics(id,name,description) VALUES (?,?,?)", topicId,
+                "Synthetic topic " + topicId, "Synthetic candidate ledger test");
+        UUID requestId = UUID.randomUUID();
+        ReservationRequest request = new ReservationRequest(null, "OPENAI", "gpt-6.1-sol", "GLOSSARY",
+                "synthetic-test", new BigDecimal("0.15"), 1, topicId);
+        LedgerEntry entry = ledger.reserve(requestId, request);
+        assertThat(entry.meetingId()).isNull();
+        assertThat(entry.topicId()).isEqualTo(topicId);
+        assertThat(ledger.byMeeting(YearMonth.of(2026, 10))).isEmpty();
+        assertThat(ledger.totals(YearMonth.of(2026, 10)).budgetCommittedUsd()).isEqualByComparingTo("0.15");
+        ledger.startDispatch(requestId);
+        ledger.settle(requestId, new Settlement(new BigDecimal("0.05"), null, 100L, 20L));
+        jdbc.update("DELETE FROM meeting_topics WHERE id=?", topicId);
+        assertThat(ledger.totals(YearMonth.of(2026, 10)).budgetCommittedUsd()).isEqualByComparingTo("0.05");
+    }
+
+    @Test
+    void meetingCapIncludesLlmRequestsAndUncertainSpeechAcrossReconnects() {
+        UUID first = UUID.randomUUID();
+        ledger.reserveBounded(first, liveRequest("0.20", 60), new BigDecimal("0.30"), 120);
+        ledger.startDispatch(first);
+        ledger.markUncertain(first);
+        ReservationRequest summary = new ReservationRequest(meetingId, "OPENAI", "gpt-6.1-sol", "SUMMARY",
+                "synthetic-test", new BigDecimal("0.11"), 1);
+        assertThatThrownBy(() -> ledger.reserveBounded(UUID.randomUUID(), summary, new BigDecimal("0.30"), 120))
+                .isInstanceOfSatisfying(ApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("MEETING_BUDGET_EXCEEDED"));
+        assertThatThrownBy(() -> ledger.reserveBounded(UUID.randomUUID(), liveRequest("0.01", 61),
+                new BigDecimal("0.30"), 120)).isInstanceOfSatisfying(ApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("MEETING_AUDIO_LIMIT_EXCEEDED"));
+    }
+
+    @Test
+    void settledAudioUsesMeasuredTimeAndLlmDoesNotSpendAudioAllowance() {
+        UUID first = UUID.randomUUID();
+        ledger.reserveBounded(first, liveRequest("0.20", 60), BigDecimal.ONE, 60);
+        ledger.startDispatch(first);
+        ledger.settle(first, new Settlement(new BigDecimal("0.05"), 15L, null, null));
+        ledger.reserveBounded(UUID.randomUUID(), new ReservationRequest(meetingId, "OPENAI", "gpt-6.1-sol",
+                "SUMMARY", "synthetic-test", new BigDecimal("0.10"), 1), BigDecimal.ONE, 60);
+        ledger.reserveBounded(UUID.randomUUID(), liveRequest("0.10", 45), BigDecimal.ONE, 60);
+        assertThatThrownBy(() -> ledger.reserveBounded(UUID.randomUUID(), liveRequest("0.01", 1), BigDecimal.ONE, 60))
+                .isInstanceOfSatisfying(ApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("MEETING_AUDIO_LIMIT_EXCEEDED"));
+    }
+
+    @Test
+    void topicAndMeetingCannotBeAssignedToTheSameReservation() {
+        ReservationRequest request = new ReservationRequest(meetingId, "OPENAI", "gpt-6.1-sol", "GLOSSARY",
+                "synthetic-test", new BigDecimal("0.10"), 1, UUID.randomUUID());
+        assertThatThrownBy(() -> ledger.reserve(UUID.randomUUID(), request))
+                .isInstanceOfSatisfying(ApiException.class,
+                        error -> assertThat(error.code()).isEqualTo("INVALID_RESERVATION"));
+    }
+
+    private ReservationRequest liveRequest(String usd, long seconds) {
+        return new ReservationRequest(meetingId, "DEEPGRAM", "nova-3", "TRANSCRIPTION", "synthetic-test",
+                new BigDecimal(usd), seconds);
+    }
+
+    @Test
     void reservationReplayIsIdempotentButMismatchedPayloadConflicts() {
         UUID requestId = UUID.randomUUID();
         LedgerEntry first = reserve(requestId, "0.1000001");
@@ -83,6 +146,34 @@ class CostLedgerIntegrationTest {
             assertThat(new boolean[]{first.get(), second.get()}).containsExactlyInAnyOrder(true, false);
         }
         assertThat(ledger.totals(YearMonth.of(2026, 10)).budgetCommittedUsd()).isEqualByComparingTo("0.750000");
+    }
+
+    @Test
+    void concurrentSpeechAndLlmReservationsShareOneMeetingCap() throws Exception {
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        try (ExecutorService pool = Executors.newFixedThreadPool(2)) {
+            Future<Boolean> first = pool.submit(() -> boundedReserve(ready, start, "TRANSCRIPTION"));
+            Future<Boolean> second = pool.submit(() -> boundedReserve(ready, start, "SUMMARY"));
+            assertThat(ready.await(5, java.util.concurrent.TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            assertThat(new boolean[]{first.get(10, java.util.concurrent.TimeUnit.SECONDS),
+                    second.get(10, java.util.concurrent.TimeUnit.SECONDS)}).containsExactlyInAnyOrder(true, false);
+        }
+        assertThat(ledger.totals(YearMonth.of(2026, 10)).budgetCommittedUsd()).isEqualByComparingTo("0.75");
+    }
+
+    private boolean boundedReserve(CountDownLatch ready, CountDownLatch start, String operation) throws Exception {
+        ready.countDown();
+        if (!start.await(5, java.util.concurrent.TimeUnit.SECONDS)) throw new IllegalStateException("Timed out");
+        try {
+            ledger.reserveBounded(UUID.randomUUID(), new ReservationRequest(meetingId, "TEST", "synthetic",
+                    operation, "synthetic-test", new BigDecimal("0.75"), 1), BigDecimal.ONE, 60);
+            return true;
+        } catch (ApiException failure) {
+            assertThat(failure.code()).isEqualTo("MEETING_BUDGET_EXCEEDED");
+            return false;
+        }
     }
 
     @Test

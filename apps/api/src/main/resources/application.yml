@@ -17,3 +17,16 @@ app:
   recording-root: ${APP_RECORDING_ROOT:./data/recordings}
   paid-api-tests-enabled: ${PAID_API_TESTS_ENABLED:false}
   fake-event-delay-ms: ${APP_FAKE_EVENT_DELAY_MS:100}
+  deepgram:
+    startup-recovery-enabled: ${PAID_API_TESTS_ENABLED:false}
+ai:
+  maximum-audio-seconds: ${AI_MAXIMUM_AUDIO_SECONDS:14400}
+  maximum-meeting-usd: ${AI_MAXIMUM_MEETING_USD:3.00}
+  deepgram-rate-per-minute: ${AI_DEEPGRAM_RATE_PER_MINUTE:0.011}
+  price-version: ${AI_PRICE_VERSION:config-record}
+  deepgram-api-key: ${DEEPGRAM_API_KEY:}
+  openai-api-key: ${OPENAI_API_KEY:}
+  openai-input-rate-per-million: ${AI_OPENAI_INPUT_RATE_PER_MILLION:2.00}
+  openai-output-rate-per-million: ${AI_OPENAI_OUTPUT_RATE_PER_MILLION:10.00}
+  output-token-cap: ${AI_OUTPUT_TOKEN_CAP:2000}
+  timeout-seconds: ${AI_TIMEOUT_SECONDS:45}

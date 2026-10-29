@@ -29,6 +29,13 @@ public class TopicRepository {
         return rows.getFirst();
     }
 
+    public Topic lock(UUID id) {
+        List<Topic> rows = jdbc.query("SELECT id,name,description FROM meeting_topics WHERE id=? FOR UPDATE",
+                this::topic, id);
+        if (rows.isEmpty()) throw notFound("TOPIC_NOT_FOUND", "Topic was not found");
+        return rows.getFirst();
+    }
+
     public Topic create(String name, String description) {
         UUID id = UUID.randomUUID();
         try {

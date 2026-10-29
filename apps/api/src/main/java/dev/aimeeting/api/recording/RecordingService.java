@@ -126,7 +126,7 @@ public class RecordingService {
 
     private Meeting requireActiveOrStoppedLocalMeeting(UUID meetingId) {
         Meeting meeting = meetings.lock(meetingId);
-        if (!"LOCAL_RECORDING".equals(meeting.inputSource())) {
+        if (!"LOCAL_RECORDING".equals(meeting.inputSource()) && !"LIVE".equals(meeting.inputSource())) {
             throw new ApiException(HttpStatus.CONFLICT, "INVALID_INPUT_SOURCE", "Meeting does not accept local recording chunks");
         }
         if (!"STARTED".equals(meeting.status()) && !"STOPPED".equals(meeting.status())) {

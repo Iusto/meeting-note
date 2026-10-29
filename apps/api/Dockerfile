@@ -6,6 +6,7 @@ COPY src src
 RUN mvn -q package -DskipTests
 
 FROM eclipse-temurin:21-jre
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 RUN useradd --system --uid 10001 app && mkdir -p /data/recordings && chown -R app /data/recordings
 WORKDIR /app
 COPY --from=build /workspace/target/api-*.jar app.jar

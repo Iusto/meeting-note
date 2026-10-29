@@ -1,6 +1,8 @@
-# Mock + local recording browser regression
+# Mock, LIVE transport, and local recording browser regression
 
 The suite exercises the live web and API processes with Chrome already installed on the host. It never calls a speech or summary provider.
+
+`live-ai.spec.ts` enables only a mocked capability response and browser WebSocket. Chrome's real AudioWorklet sends synthetic PCM to that fake socket; a simulated STT error must preserve the recording uploaded to the real local API. The server remains paid-disabled.
 
 `recording.spec.ts` uses Chrome's synthetic microphone device, never the host microphone. It verifies playable stored audio and its SHA-256, failed-upload recovery through IndexedDB after reload, and exclusive recording across tabs. The runner uses one worker because the product intentionally permits one active meeting. Use a synthetic test database/recording directory.
 
@@ -55,3 +57,7 @@ $env:OFFLINE_BROWSER_QUOTA_TEST_ENABLED='true'
 ```
 
 PostgreSQL must already listen on `127.0.0.1:55432` for the local `ai_meeting` role. Google Chrome and effective CDP `Storage.overrideQuotaForOrigin` enforcement are required. If Chrome reports the override but still accepts the capability probe, the scenario is explicitly skipped with that limitation and does not claim quota recovery passed. The test refuses ambiguous cleanup targets and only drops the database and recording directory it created. The quota scenario targets Chrome's origin quota policy, not physical host disk exhaustion. Host sleep, physical disk exhaustion, browser crashes, and external STT reconnection remain separate validation gaps.
+
+## 연결 복구 UI 회귀
+
+`npx playwright test --config playwright.reconnect.config.ts`는 실제 서버·유료 공급자 없이 합성 마이크와 가짜 API/WebSocket으로 재연결·녹음 재개를 확인한다. Windows에서 Vite 자식 프로세스 종료가 지연되면 웹을 별도 터미널에서 `npm run dev -- --port 5189`로 실행하고 `$env:E2E_EXTERNAL_WEB='1'`을 지정해 같은 시험을 실행한다. 종료 후 테스트용 웹만 종료한다. 파일의 실제 WebM 병합·전체 재생은 API의 FFmpeg 시험 및 Docker에서 별도로 검증해야 한다.

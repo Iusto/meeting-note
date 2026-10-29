@@ -1,6 +1,7 @@
 package dev.aimeeting.api.topic;
 
 import dev.aimeeting.api.topic.TopicRepository.AliasValue;
+import dev.aimeeting.api.provider.openai.MeetingAiPayloads.TopicCandidate;
 import dev.aimeeting.api.web.ApiException;
 import java.text.Normalizer;
 import java.util.HashSet;
@@ -61,6 +62,28 @@ public class TopicService {
         return List.of(mes, lot);
     }
 
+    public AiSnapshot prepareAiSuggestions(UUID topicId) {
+        Topic topic = topics.find(topicId);
+        return new AiSnapshot(topic, List.copyOf(topics.terms(topicId)));
+    }
+
+    @org.springframework.transaction.annotation.Transactional
+    public List<GlossaryTerm> storeAiSuggestions(AiSnapshot expected, List<TopicCandidate> candidates) {
+        Topic current = topics.lock(expected.topic().id());
+        List<GlossaryTerm> currentTerms = topics.terms(current.id());
+        if (!current.equals(expected.topic()) || !currentTerms.equals(expected.existingTerms())) {
+            throw new ApiException(HttpStatus.CONFLICT, "STALE_AI_SNAPSHOT",
+                    "Topic or glossary changed while candidates were being generated");
+        }
+        java.util.ArrayList<GlossaryTerm> stored = new java.util.ArrayList<>();
+        for (TopicCandidate candidate : List.copyOf(candidates)) {
+            if (topics.findByNormalizedCanonical(current.id(), normalize(candidate.canonical())) != null) continue;
+            stored.add(createTerm(current.id(), candidate.canonical(), candidate.meaning(), candidate.aliases(),
+                    "PENDING", "OPENAI"));
+        }
+        return List.copyOf(stored);
+    }
+
     private GlossaryTerm suggestion(UUID topicId, String canonical, String meaning, List<String> aliases) {
         GlossaryTerm existing = topics.findByNormalizedCanonical(topicId, normalize(canonical));
         if (existing != null) return existing;
@@ -101,4 +124,6 @@ public class TopicService {
     }
 
     private void invalid(String message) { throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", message); }
+
+    public record AiSnapshot(Topic topic, List<GlossaryTerm> existingTerms) {}
 }

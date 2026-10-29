@@ -119,7 +119,7 @@ public class MeetingRepository {
         UUID activeMeetingId = lockActiveMeeting();
         if (activeMeetingId == null) return;
         Meeting active = find(activeMeetingId);
-        if (!"LOCAL_RECORDING".equals(active.inputSource())) return;
+        if (!"LOCAL_RECORDING".equals(active.inputSource()) && !"LIVE".equals(active.inputSource())) return;
         jdbc.update("UPDATE meetings SET status='STOPPED',ended_at=?,revision=revision+1 WHERE id=? AND status='STARTED'",
                 OffsetDateTime.now(ZoneOffset.UTC), activeMeetingId);
         jdbc.update("UPDATE runtime_state SET active_meeting_id=NULL WHERE id=1 AND active_meeting_id=?", activeMeetingId);
@@ -155,7 +155,15 @@ public class MeetingRepository {
 
     @Transactional
     public UUID createDeepgramStreamSession(UUID meetingId, long audioOffsetMs, UUID requestId) {
+        return createDeepgramStreamSession(meetingId, audioOffsetMs, requestId, "DEEPGRAM_POC");
+    }
+
+    @Transactional
+    public UUID createDeepgramStreamSession(UUID meetingId, long audioOffsetMs, UUID requestId, String provider) {
         Objects.requireNonNull(requestId, "requestId");
+        if (!"DEEPGRAM_POC".equals(provider) && !"DEEPGRAM".equals(provider)) {
+            throw new IllegalArgumentException("Unsupported Deepgram provider");
+        }
         if (audioOffsetMs < 0) {
             throw new IllegalArgumentException("audioOffsetMs must be nonnegative");
         }
@@ -175,7 +183,7 @@ public class MeetingRepository {
         UUID sessionId = UUID.randomUUID();
         try {
             jdbc.update("INSERT INTO stream_sessions(id,meeting_id,provider,audio_offset_ms,started_at) VALUES (?,?,?,?,?)",
-                    sessionId, meetingId, "DEEPGRAM_POC", audioOffsetMs, OffsetDateTime.now(ZoneOffset.UTC));
+                    sessionId, meetingId, provider, audioOffsetMs, OffsetDateTime.now(ZoneOffset.UTC));
             jdbc.update("INSERT INTO active_deepgram_sessions(meeting_id,stream_session_id,request_id) VALUES (?,?,?)",
                     meetingId, sessionId, requestId);
         } catch (DataIntegrityViolationException conflict) {
@@ -197,14 +205,14 @@ public class MeetingRepository {
                     now, claim.streamSessionId());
         }
         // Older POC streams predate V8 and have no durable claim. Close their audit rows as well.
-        jdbc.update("UPDATE stream_sessions SET ended_at=?,close_reason='APP_RESTART' WHERE provider='DEEPGRAM_POC' AND ended_at IS NULL",
+        jdbc.update("UPDATE stream_sessions SET ended_at=?,close_reason='APP_RESTART' WHERE provider IN ('DEEPGRAM_POC','DEEPGRAM') AND ended_at IS NULL",
                 now);
         // This runs before traffic while holding the process-lifetime database lock. It also repairs a crash
         // between reservation and claim, and conservatively preserves any unlinked dispatched charge.
         jdbc.update("""
                 UPDATE ai_usage_records
                    SET state=CASE state WHEN 'RESERVED' THEN 'RELEASED' ELSE 'UNCERTAIN' END,updated_at=?
-                 WHERE provider='DEEPGRAM_POC' AND state IN ('RESERVED','DISPATCHED')
+                 WHERE provider IN ('DEEPGRAM_POC','DEEPGRAM') AND state IN ('RESERVED','DISPATCHED')
                 """, now);
         jdbc.update("DELETE FROM active_deepgram_sessions");
         return claims.size();
@@ -224,7 +232,16 @@ public class MeetingRepository {
     }
 
     @Transactional
+    public void setActiveDeepgramProviderSessionId(UUID meetingId, UUID streamSessionId, String providerSessionId) {
+        requireActiveDeepgramClaim(meetingId, streamSessionId);
+        setStreamProviderSessionId(streamSessionId, providerSessionId);
+    }
+
+    @Transactional
     public void closeStreamSession(UUID id, String reason) {
+        // Match provider-metadata lock order (active claim -> stream row) to avoid close/update deadlocks.
+        jdbc.query("SELECT stream_session_id FROM active_deepgram_sessions WHERE stream_session_id=? FOR UPDATE",
+                (rs, row) -> rs.getObject(1, UUID.class), id);
         jdbc.update("UPDATE stream_sessions SET ended_at=?,close_reason=? WHERE id=? AND ended_at IS NULL",
                 OffsetDateTime.now(ZoneOffset.UTC), reason, id);
         jdbc.update("DELETE FROM active_deepgram_sessions WHERE stream_session_id=?", id);
@@ -292,6 +309,29 @@ public class MeetingRepository {
             inserted.add(findSegment(id));
         }
         return List.copyOf(inserted);
+    }
+
+    /**
+     * Serializes a provider write against startup recovery/ownership-loss cleanup. Once the durable active claim is
+     * removed, an old process cannot append a late final transcript even if a callback was already queued locally.
+     */
+    @Transactional
+    public List<TranscriptSegment> insertActiveDeepgramFinalBatchIfAbsent(
+            UUID meetingId, UUID streamSessionId, List<FinalSegmentInput> inputs) {
+        // Session creation already uses meeting -> claim. Preserve that order for reconnect/final-write races.
+        lock(meetingId);
+        requireActiveDeepgramClaim(meetingId, streamSessionId);
+        return insertFinalBatchIfAbsent(meetingId, inputs);
+    }
+
+    private void requireActiveDeepgramClaim(UUID meetingId, UUID streamSessionId) {
+        List<UUID> claims = jdbc.query("""
+                SELECT meeting_id FROM active_deepgram_sessions
+                 WHERE stream_session_id=? FOR UPDATE
+                """, (rs, row) -> rs.getObject(1, UUID.class), streamSessionId);
+        if (claims.size() != 1 || !meetingId.equals(claims.getFirst())) {
+            throw new IllegalStateException("Deepgram stream ownership is no longer active");
+        }
     }
 
     public record FinalSegmentInput(String eventId, long sequence, long startMs, long endMs,

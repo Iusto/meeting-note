@@ -8,7 +8,15 @@ After starting Docker Desktop's Linux engine and signing in to Tailscale, run fr
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\portfolio\ai-meeting-codex\scripts\start-private.ps1
 ```
 
-The script checks both services, detects the MagicDNS hostname, creates `.env` with random secrets only when absent, builds/starts Compose, checks that the local API rejects unauthenticated access, and configures private Tailscale Serve. Existing `.env` files and Docker data are retained. Paid APIs are forced off for startup even if the shell or `.env` enables them; inherited shell settings are restored afterward. Provider keys are not used. First builds download container images and dependencies. If Tailscale asks to enable HTTPS/Serve, complete its displayed link and rerun. Existing Serve configuration may require an interactive confirmation; the script does not pass `--yes` or reset it.
+The script checks both services, detects the MagicDNS hostname, creates `.env` with random secrets only when absent, builds/starts Compose, checks that the local API rejects unauthenticated access, and configures private Tailscale Serve. Existing `.env` files and Docker data are retained. The default command forces paid APIs off even if the shell or `.env` enables them; inherited shell settings are restored afterward. First builds download container images and dependencies. If Tailscale asks to enable HTTPS/Serve, complete its displayed link and rerun. Existing Serve configuration may require an interactive confirmation; the script does not pass `--yes` or reset it.
+
+To activate the implemented Deepgram/OpenAI paths, keep both provider keys in the current process or Windows user environment and opt in explicitly:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\portfolio\ai-meeting-codex\scripts\start-private.ps1 -EnablePaidAi
+```
+
+The script passes the keys only to Compose for this run, never writes or prints them, and restores the caller environment. The app monthly budget defaults to `0 USD`; sign in and save a small positive amount such as `3 USD` before starting LIVE or an OpenAI task. Configured rates and limits are conservative reservations, not a provider billing guarantee.
 
 The printed HTTPS address still needs login/microphone verification from another device on the tailnet. Use `APP_OWNER_TOKEN` from the local `.env` once to register the owner username/password, then sign in with those credentials. Remembered sessions last up to 30 days across API restarts; do not paste credentials into chat. Docker uses its own database/recording volumes; it does not import the development database. If Codex reports access denied on Docker/Tailscale named pipes, run the command outside the restricted agent session. Isolated mock checks:
 
@@ -17,6 +25,8 @@ python -m unittest discover -s tests/ops -p test_start_private.py -v
 ```
 
 ## Bounded provider POC
+
+These are optional diagnostic tools. ADR-021 prioritizes wiring real AI into the web application and validating that same path; a separate paid POC is no longer a prerequisite. Do not repeat paid runs unless they resolve a specific issue within the approved total budget.
 
 These standalone commands do not start Spring or enable AI in the application. They default to **dry run**: validate input, prices, reservation and output, without reading a provider key or making a network request. Build the JAR first (`apps/api`: `./mvnw package` or `.\mvnw.cmd package`). Output parents must exist and output files must be new.
 
@@ -34,7 +44,7 @@ powershell.exe -NoProfile -File scripts/run-deepgram-poc.ps1 --input C:\private\
 
 Actual execution additionally requires `--execute`, `--synthetic-approved` and process `PAID_API_TESTS_ENABLED=true`, plus the matching process environment key (`OPENAI_API_KEY` or `DEEPGRAM_API_KEY`). Do not put keys in arguments or reports. Deepgram comparisons can add `--diarization` and repeated `--keyterm VALUE` with `--keyterms-approved`; explicitly supply a rate that includes the selected options. Recheck official rates before any paid run.
 
-Limits and reservations apply to one invocation, separately from the application DB's monthly ledger. Multiple comparison runs share the operator-approved total budget; do not treat each invocation as a fresh allowance. Reports distinguish estimates from unknown supplier charges and never declare GO. Deepgram receive timestamps are not automatically end-to-end caption latency or CER/DER: human alignment, reference audio and the [quality gate](../docs/07-TEST-AND-EVAL.md#품질-게이트-1--nova-3-poc-phase-1) remain required. The agent environment currently cannot reach either API host on port 443; a successful dry run does not establish provider connectivity.
+Limits and reservations apply to one invocation, separately from the application DB's monthly ledger. Multiple runs share the operator-approved total budget; do not treat each invocation as a fresh allowance. Reports distinguish estimates from unknown supplier charges and never declare GO. Deepgram receive timestamps are not automatically end-to-end caption latency or CER/DER: use reference audio and human alignment as described in [integrated validation](../docs/07-TEST-AND-EVAL.md#실제-ai-통합-검증). Previous provider connectivity checks in the agent environment failed on port 443; a successful dry run does not establish current provider connectivity.
 
 ## Backup and restore
 
@@ -92,3 +102,9 @@ python scripts/estimate_cost.py examples/cost-scenario-assumptions.json
 ```
 
 Results include the input rates, STT/LLM subtotals, budget excess, and affordable hours. Costs round up to six decimal places; remaining budget and affordable hours round down. Inputs must be finite and nonnegative, at most 1,000,000,000 with at most 12 decimal places. The evaluation test command above covers both tools.
+
+## 회의 시작 바로가기 (2026-10-29)
+
+서버 PC에서 루트의 `start-meeting.bat`을 더블클릭한다. 기존 `start-private.ps1 -EnablePaidAi -OpenMeeting`을 실행하여 Docker Linux 엔진, Tailscale 로그인, 두 공급자 키를 확인하고 이미지를 빌드·기동한 뒤 private HTTPS 새 회의 화면을 연다. Docker Desktop과 Tailscale은 미리 실행해야 하며 최초 빌드는 시간이 걸린다. 실행 오류는 창에 남는다. 배포가 컨테이너를 교체할 수 있으므로 진행 중인 녹음에서는 실행하지 않는다.
+
+브라우저에서 로그인 → 사용량의 월 잔액·회당 상한 확인 → 새 회의의 LIVE 선택 → 마이크 선택·녹음 시작 순으로 진행한다. 실행기는 인증된 예산이나 실제 공급자 접속 성공을 보장하지 않으며 녹음이나 유료 API 호출을 자동 시작하지 않는다. 타 PC에서는 Tailscale 연결 후 콘솔에 표시된 HTTPS 주소를 연다. 브라우저는 서버 PC에 열린다.

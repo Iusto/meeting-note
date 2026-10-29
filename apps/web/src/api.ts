@@ -1,4 +1,4 @@
-import type { Meeting, TranscriptSegment } from './types'
+import type { AiConfiguration, Meeting, TranscriptSegment } from './types'
 import type { RecordingChunk } from './recordingStore'
 
 export interface SavedRecording {
@@ -55,7 +55,8 @@ export const api = {
   updateMeeting: (meetingId: string, title: string, revision: number) =>
     request<Meeting>(`/meetings/${meetingId}`, { method: 'PATCH', body: JSON.stringify({ title, revision }) }),
   deleteMeeting: (meetingId: string, revision: number) => request<{ deleted: true; cleanupPending: boolean }>(`/meetings/${meetingId}?revision=${revision}`, { method: 'DELETE' }),
-  createMeeting: (title: string, inputSource: 'MOCK' | 'LOCAL_RECORDING' = 'MOCK', topicId?: string) =>
+  getAiConfiguration: () => request<AiConfiguration>('/ai/configuration'),
+  createMeeting: (title: string, inputSource: 'MOCK' | 'LOCAL_RECORDING' | 'LIVE' = 'MOCK', topicId?: string) =>
     request<Meeting>('/meetings', { method: 'POST', body: JSON.stringify({ title, inputSource, topicId: topicId || null }) }),
   getMeeting: (meetingId: string) => request<Meeting>(`/meetings/${meetingId}`),
   startMeeting: (meetingId: string) =>
@@ -77,7 +78,8 @@ export const api = {
     request<SavedRecording>(`/meetings/${meetingId}/recording-complete`, { method: 'POST', body: JSON.stringify({ chunkCount }), signal: AbortSignal.timeout(30_000) }),
 }
 
-export function liveSocketUrl(meetingId: string) {
+export function liveSocketUrl(meetingId: string, audioOffsetMs?: number) {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${protocol}//${window.location.host}${API_PREFIX}/meetings/${meetingId}/live`
+  const query = audioOffsetMs === undefined ? '' : `?${new URLSearchParams({ audioOffsetMs: String(audioOffsetMs) })}`
+  return `${protocol}//${window.location.host}${API_PREFIX}/meetings/${meetingId}/live${query}`
 }
