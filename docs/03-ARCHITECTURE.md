@@ -1,9 +1,9 @@
 # 03. 시스템 아키텍처
 
-웹앱은 REST로 회의·녹음·사전을 관리하고 Mock 전사 또는 실제 AI를 선택한다. LIVE 모드는 인증된 내부 WebSocket으로 PCM16 16kHz mono 프레임을 서버에 보내고, 서버가 Deepgram과 OpenAI를 호출한다. 구현과 실측 상태는 [개발 계획](08-IMPLEMENTATION-PLAN.md)을 따른다.
+웹앱은 REST로 회의·녹음·사전을 관리하고 Mock 전사 또는 실제 AI를 선택한다. LIVE 모드는 인증된 내부 WebSocket으로 PCM16 16kHz mono 프레임을 서버에 보내고, 서버가 Deepgram으로 전사를 요청한다. 요약·교정·용어 후보는 사용자 요청 시 저장된 텍스트를 Windows 호스트의 Codex bridge에 전달한다. 별도 API 모드를 명시하면 OpenAI Responses API 경로를 선택한다. 구현과 실측 상태는 [개발 계획](08-IMPLEMENTATION-PLAN.md)을 따른다.
 
 ## 구조를 선택한 이유
-**React SPA + Spring Boot 모듈러 모놀리식 + PostgreSQL + 디스크 + Deepgram(STT 후보) + OpenAI Sol(요약·교정)**. 로컬 Python/STT/LLM Worker **없음**. 공급자 의존성은 `SpeechProvider` 인터페이스로 격리하되 복잡한 자동 AI Router는 만들지 않는다.
+**React SPA + Spring Boot 모듈러 모놀리식 + PostgreSQL + 디스크 + Deepgram Nova-3(실시간 전사) + Windows Codex CLI(요약·교정)**. 웹·API·DB는 Docker Compose에서, Node.js bridge와 CLI는 Windows 호스트에서 실행한다. 모델 추론은 공급자 서버에서 이루어진다. 로컬 Python/STT/LLM Worker는 없으며 공급자 실패 시 다른 유료 API로 자동 전환하지 않는다.
 
 개인 홈서버 한 대에서 운영하므로 배포·백업 단위를 단순하게 유지한다. 관계와 수정 이력은 PostgreSQL에, 큰 오디오 파일은 디스크에 둔다. 브라우저가 공급자에 직접 접속하지 않아 키·예산·회의 시간축을 서버에서 관리할 수 있다.
 
@@ -40,8 +40,8 @@ gpt-6.1-sol]
 3. 브라우저 녹음은 STT 송신 실패와 **무관하게 지속**. 일정 크기·시간으로 나눠 서버 업로드; 전송 실패 시 재시도 가능하게 임시 저장 방안 검증.
 4. Deepgram 단어/문장 interim & final, speaker ID, timestamp를 **공급자별 adapter**가 내부 이벤트로 변환.
 5. UI는 interim 즉시 표시. final만 장기 DB 저장(이벤트 중복 방지 키 및 offset).
-6. 문장 확정 후 안전한 사전 검사 → 선택적 Sol 교정. 사용자 고정 문장은 AI가 변경 불가.
-7. 종료 시 오디오 청크 finalize, 전사와 시간축 정합성 검사, 요약·결정/할 일 작성. 불확실한 구간을 사용자 검토 큐로.
+6. 확정 발언을 저장하고 사용자에게 표시한다. 회의 종료 후 사용자가 교정 후보를 요청하고 검토·적용한다. 자동으로 교정을 요청하거나 적용하지 않는다. 사용자 고정 문장은 AI가 변경 불가.
+7. 녹음 종료 시 오디오 청크를 finalize한다. 종료된 회의에서 사용자가 요약 생성을 요청하면 발언을 분할·통합해 버전형 요약을 저장한다. 요약 버튼 동작은 녹음 종료와 별도다.
 
 ## 처리 시간/운영 한계
 - P95 첫 자막 3초 이내 목표: 원격 STT 결과+WebSocket roundtrip+UX를 **집에서 측정**해야 함. 선언만으로 보장 불가.
@@ -62,4 +62,10 @@ Redis, Kafka, K8s, 벡터 DB, 로컬 pyannote, GPU 서버, WebRTC 별도 SFU, �
 
 요약·교정·용어 후보는 기존 segment/evidence 검증과 DB 저장을 유지하고 생성 전송만 교체한다. 브라우저 → Spring API → `host.docker.internal:8767`의 토큰 인증 bridge → Windows `codex exec` → 검증 → 저장. ChatGPT 로그인은 PC의 Codex 저장소에만 남으며 Docker에 복사하지 않는다. CLI는 도구·검색을 끄고 임시 디렉터리에서 ephemeral/schema 출력으로 실행한다. 동시 작업 1개, 요청별 10분 제한, 결과/스키마 임시 파일 삭제를 적용한다. 별도 API 자동 fallback은 없다. 실패는 로그인·구독 한도·연결·모델·시간초과 코드로 UI에 전달한다.
 
-모델 추론은 OpenAI 서버에서 진행되며 PC는 CLI 실행 호스트다. 구독 한도는 그대로 적용되고 이 경로는 API 달러 원장에 예약/정산하지 않는다. Deepgram과 기존 API 기록은 기존 비용 정책을 유지한다. bridge 포트는 웹 프록시나 Tailscale Serve로 공개하지 않는다.
+모델 추론은 OpenAI 서버에서 진행되며 PC는 CLI 실행 호스트다. 구독 한도는 그대로 적용되고 이 경로는 API 달러 원장에 예약/정산하지 않는다. 새 Deepgram 전사는 서버의 예약·추정 비용과 예산 제한을 유지한다. 이전 비용 기록은 사용자 요청으로 정리했으며 공식 Deepgram 사용량·청구액 조회는 미연동이다. bridge 포트는 웹 프록시나 Tailscale Serve로 공개하지 않는다.
+
+## 2026-11-04: 사용자 화자 수정과 검색 (ADR-025)
+
+`speakers.display_name`은 회의별 표시 이름, `merged_into_label`은 같은 사람으로 연결한 대표 라벨이다. 그룹 연결은 한 단계로 유지하고 그룹 이동·개별 분리를 지원한다. `segment_speaker_overrides`는 발언별 사용자 지정을 저장한다. 공급자 라벨·원문은 변경하지 않으므로 늦은 화자 이벤트가 와도 사용자 지정을 덮어쓰지 않는다. 현재 적용 범위는 화면·근거 표시·회의 내 검색이며 요약 생성 입력과 내보내기는 공급자 라벨을 유지한다.
+
+전체 회의 검색은 DB에서 제목·원문·교정문·표시 이름으로 회의를 찾는다. 회의 내 검색은 로드된 확정 발언과 화면 화자 이름을 브라우저에서 검색하고 발언으로 이동한다. 음성 재분석은 수행하지 않는다.

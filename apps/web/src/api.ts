@@ -11,6 +11,8 @@ export interface SavedRecording {
 }
 
 const API_PREFIX = '/api/v1'
+export interface SpeakerName { label: string; displayName: string | null; mergedInto: string | null }
+export interface SpeakerOverride { segmentId: string; label: string }
 
 export class ApiError extends Error {
   constructor(
@@ -42,7 +44,14 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  getSpeakerNames: (id: string) => request<{ label: string; displayName: string | null }[]>(`/meetings/${id}/speakers`),
+  getSpeakerOverrides: (id: string) => request<SpeakerOverride[]>(`/meetings/${id}/speaker-overrides`),
+  overrideSpeaker: (id: string, segmentId: string, label: string | null, expectedLabel: string | null) => request<SpeakerOverride[]>(`/meetings/${id}/segments/${segmentId}/speaker`, {
+    method: 'PUT', body: JSON.stringify({ label, expectedLabel }),
+  }),
+  getSpeakerNames: (id: string) => request<SpeakerName[]>(`/meetings/${id}/speakers`),
+  mergeSpeaker: (id: string, label: string, target: string | null, expectedTarget: string | null) => request<SpeakerName[]>(`/meetings/${id}/speaker-merge`, {
+    method: 'PUT', body: JSON.stringify({ label, target, expectedTarget }),
+  }),
   renameSpeaker: (id: string, label: string, displayName: string, expectedName: string) => request<{ label: string; displayName: string | null }>(`/meetings/${id}/speakers`, {
     method: 'PUT', body: JSON.stringify({ label, displayName, expectedName }),
   }),

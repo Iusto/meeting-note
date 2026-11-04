@@ -50,7 +50,7 @@ export function TranscriptCard({ segment, speakerName, partial = false, onSave }
     finally { setSaving(false) }
   }
   return (
-    <article id={`segment-${segment.segmentId}`} className={`group grid gap-4 rounded-[1.4rem] border p-5 transition md:grid-cols-[7.5rem_1fr] ${partial ? 'border-dashed border-moss/20 bg-white/45' : 'border-white/80 bg-white shadow-sm'}`}>
+    <article tabIndex={-1} id={`segment-${segment.segmentId}`} className={`focus:outline focus:outline-2 focus:outline-moss group grid gap-4 rounded-[1.4rem] border p-5 transition md:grid-cols-[7.5rem_1fr] ${partial ? 'border-dashed border-moss/20 bg-white/45' : 'border-white/80 bg-white shadow-sm'}`}>
       <div>
         <p className="font-mono text-xs font-bold text-moss/55">{formatTime(segment.startMs)}</p>
         <div className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-mint px-2.5 py-1 text-xs font-bold text-moss">

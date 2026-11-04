@@ -64,3 +64,8 @@
 
 ## 보관 정책
 녹음, 임시 chunk, 로그, 전사/요약, 백업 각각의 보존·삭제 정책을 분리한다. 기본 보존기간은 사용자 설정 이전에는 강제 자동삭제하지 않으며, UI에서 용량과 삭제 대상을 알려준다.
+## V13 · 화자 연결과 개별 발언 지정
+
+`speakers.merged_into_label VARCHAR(100)`은 같은 회의의 대표 화자 라벨 또는 NULL이다. 연결을 한 단계로 유지하고 자기 자신 연결을 제약으로 막는다. 연결 변경은 회의 행 잠금과 이전 값 비교로 처리한다. `display_name`은 연결 시 덮어쓰지 않아 개별 분리 후 복원된다.
+
+`segment_speaker_overrides(segment_id UUID PRIMARY KEY REFERENCES transcript_segments(id) ON DELETE CASCADE, speaker_label VARCHAR(100) NOT NULL)`은 발언별 사용자 지정을 별도로 저장한다. 회의와 대상 화자의 소속은 서비스에서 확인하고 기존 지정 비교로 충돌을 감지한다. 원래 `transcript_segments.speaker_id`와 텍스트 revision은 변경하지 않는다.

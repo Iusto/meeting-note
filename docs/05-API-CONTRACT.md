@@ -123,3 +123,8 @@ WebSocket `stream.error`에 안전한 사용자 안내용 `message`를 추가한
 ### 화자 표시 이름
 
 `GET /api/v1/meetings/{id}/speakers`: 이름이 지정된 화자의 `{label, displayName}` 목록. `PUT`은 `{label, displayName, expectedName}`을 받아 저장한다. 최초 지정의 `expectedName`은 빈 문자열이다. `displayName`을 비우면 기본 표시로 복원한다. 이름 최대 200자, 공급자 식별자 최대 100자. 기존 이름 불일치는 409 `SPEAKER_NAME_CHANGED`. 인증된 소유자만 접근하며 전사 원문·revision은 변경하지 않는다.
+### 화자 연결과 개별 발언 화자
+
+`GET /meetings/{id}/speakers`는 `mergedInto`(없으면 null 또는 생략)를 함께 반환한다. `PUT /meetings/{id}/speaker-merge`는 `{label,target,expectedTarget}`을 받아 최신 화자 목록을 반환한다. `target:null`은 해당 라벨의 연결만 해제한다. 원래 이름은 유지한다. 기존 연결 불일치 409 `SPEAKER_MERGE_CHANGED`, 같은 그룹 연결 400 `SAME_SPEAKER_GROUP`.
+
+`GET /meetings/{id}/speaker-overrides`: `{segmentId,label}` 목록. `PUT /meetings/{id}/segments/{segmentId}/speaker`: `{label,expectedLabel}`, 최초 지정의 expectedLabel은 null, label null은 사용자 지정 해제. 해당 회의에 감지된 화자만 선택 가능. 다른 회의의 발언은 404, 기존 지정 불일치는 409 `SPEAKER_OVERRIDE_CHANGED`. 모든 경로는 `/api/v1` 아래이며 소유자 인증을 요구한다.

@@ -14,6 +14,44 @@ class MeetingRepositoryTest {
     @Autowired MeetingRepository meetings;
 
     @Test
+    void speakerGroupsFlattenAndDetachWithoutTouchingProviderLabels() {
+        var meeting = meetings.create("Merging");
+        meetings.renameSpeaker(meeting.id(), "a", "Alice", "");
+        meetings.renameSpeaker(meeting.id(), "b", "Bob", "");
+        meetings.mergeSpeaker(meeting.id(), "c", "a", null);
+        meetings.mergeSpeaker(meeting.id(), "a", "b", null);
+        assertThat(meetings.speakerNames(meeting.id())).contains(
+                new MeetingRepository.SpeakerName("a", "Alice", "b"),
+                new MeetingRepository.SpeakerName("c", null, "b"));
+        assertThatThrownBy(() -> meetings.mergeSpeaker(meeting.id(), "b", "c", null)).isInstanceOf(ApiException.class);
+        assertThatThrownBy(() -> meetings.mergeSpeaker(meeting.id(), "c", null, null)).isInstanceOf(ApiException.class);
+        meetings.mergeSpeaker(meeting.id(), "c", null, "b");
+        var segment = meetings.insertFinal(meeting.id(), "after-merge", 1, 0, 10, "Original", "a");
+        assertThat(segment.speakerLabel()).isEqualTo("a");
+        assertThat(meetings.speakerNames(meeting.id())).doesNotContain(new MeetingRepository.SpeakerName("c", null, "b"));
+        assertThat(meetings.search("Bob")).extracting(Meeting::id).contains(meeting.id());
+        assertThat(meetings.search("Alice")).extracting(Meeting::id).doesNotContain(meeting.id());
+    }
+
+    @Test
+    void individualSpeakerCorrectionsAreReversibleIsolatedAndPreserveProviderUpdates() {
+        var meeting = meetings.create("Speaker override");
+        var other = meetings.create("Other");
+        var segment = meetings.insertFinal(meeting.id(), "speech", 1, 0, 10, "Original", "a");
+        meetings.renameSpeaker(meeting.id(), "b", "Bob", "");
+        assertThatThrownBy(() -> meetings.overrideSpeaker(other.id(), segment.id(), "b", null)).isInstanceOf(ApiException.class);
+        assertThatThrownBy(() -> meetings.overrideSpeaker(meeting.id(), segment.id(), "missing", null)).isInstanceOf(ApiException.class);
+        meetings.overrideSpeaker(meeting.id(), segment.id(), "b", null);
+        meetings.updateSpeaker(segment.id(), "c", "TENTATIVE");
+        assertThat(meetings.speakerOverrides(meeting.id())).containsExactly(new MeetingRepository.SpeakerOverride(segment.id(), "b"));
+        assertThatThrownBy(() -> meetings.overrideSpeaker(meeting.id(), segment.id(), null, null)).isInstanceOf(ApiException.class);
+        meetings.overrideSpeaker(meeting.id(), segment.id(), null, "b");
+        assertThat(meetings.speakerOverrides(meeting.id())).isEmpty();
+        assertThat(meetings.transcript(meeting.id()).getFirst().originalText()).isEqualTo("Original");
+        assertThat(meetings.transcript(meeting.id()).getFirst().speakerLabel()).isEqualTo("c");
+    }
+
+    @Test
     void finalEventsAreIdempotentAndOriginalTextRemainsUnchangedAcrossCorrections() {
         Meeting meeting = meetings.create("Idempotency test");
         TranscriptSegment first = meetings.insertFinal(meeting.id(), "event-1", 1, 10, 20, "original", "speaker_0");

@@ -48,7 +48,7 @@ export function MeetingsPage({ onUnauthorized }: { onUnauthorized: () => void })
           <span className="text-sm font-bold text-moss/60">{meetings.length}개</span>
         </div>
         <form className="mb-5 flex flex-wrap items-end gap-3" onSubmit={(event) => { event.preventDefault(); setQuery(draftQuery.trim()) }} role="search">
-          <label className="min-w-56 flex-1 text-sm font-bold" htmlFor="meeting-search">회의 검색<input id="meeting-search" className="field mt-2" maxLength={200} placeholder="제목·원문·교정문 검색" value={draftQuery} onChange={(event) => setDraftQuery(event.target.value)} /></label>
+          <label className="min-w-56 flex-1 text-sm font-bold" htmlFor="meeting-search">전체 회의 검색<input id="meeting-search" className="field mt-2" maxLength={200} placeholder="제목·원문·교정문·화자 이름 검색" value={draftQuery} onChange={(event) => setDraftQuery(event.target.value)} /></label>
           <button className="button-primary" disabled={loading}>검색</button>
           <button type="button" className="button-secondary" disabled={loading} onClick={() => { setDraftQuery(''); setQuery('') }}>전체 보기</button>
         </form>

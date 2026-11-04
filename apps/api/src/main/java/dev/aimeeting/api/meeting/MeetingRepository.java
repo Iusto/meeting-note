@@ -24,17 +24,75 @@ public class MeetingRepository {
 
     public MeetingRepository(JdbcTemplate jdbc) { this.jdbc = jdbc; }
 
-    public record SpeakerName(String label, String displayName) {}
+    public record SpeakerName(String label, String displayName, String mergedInto) {
+        public SpeakerName(String label, String displayName) { this(label, displayName, null); }
+    }
+
+    public record SpeakerOverride(UUID segmentId, String label) {}
+
+    public List<SpeakerOverride> speakerOverrides(UUID meetingId) {
+        find(meetingId);
+        return jdbc.query("SELECT o.segment_id,o.speaker_label FROM segment_speaker_overrides o JOIN transcript_segments ts ON ts.id=o.segment_id WHERE ts.meeting_id=?",
+                (rs,n) -> new SpeakerOverride(rs.getObject(1, UUID.class), rs.getString(2)), meetingId);
+    }
+
+    @Transactional
+    public List<SpeakerOverride> overrideSpeaker(UUID meetingId, UUID segmentId, String label, String expectedLabel) {
+        lock(meetingId);
+        if (!meetingId.equals(meetingIdForSegment(segmentId)))
+            throw new ApiException(HttpStatus.NOT_FOUND, "SEGMENT_NOT_FOUND", "이 회의의 발언이 아닙니다.");
+        var rows = jdbc.query("SELECT speaker_label FROM segment_speaker_overrides WHERE segment_id=?", (rs,n) -> rs.getString(1), segmentId);
+        String current = rows.isEmpty() ? null : rows.getFirst();
+        if (!Objects.equals(current, expectedLabel))
+            throw new ApiException(HttpStatus.CONFLICT, "SPEAKER_OVERRIDE_CHANGED", "발언의 화자가 변경되었습니다. 새로고침 후 다시 시도하세요.");
+        if (label == null) jdbc.update("DELETE FROM segment_speaker_overrides WHERE segment_id=?", segmentId);
+        else {
+            if (jdbc.queryForObject("SELECT COUNT(*) FROM speakers WHERE meeting_id=? AND provider_label=?", Integer.class, meetingId, label) != 1)
+                throw new ApiException(HttpStatus.BAD_REQUEST, "SPEAKER_NOT_FOUND", "이 회의에서 감지된 화자를 선택하세요.");
+            jdbc.update("DELETE FROM segment_speaker_overrides WHERE segment_id=?", segmentId);
+            jdbc.update("INSERT INTO segment_speaker_overrides(segment_id,speaker_label) VALUES (?,?)", segmentId, label);
+        }
+        return speakerOverrides(meetingId);
+    }
 
     public List<SpeakerName> speakerNames(UUID meetingId) {
         find(meetingId);
-        return jdbc.query("SELECT provider_label,display_name FROM speakers WHERE meeting_id=? AND display_name IS NOT NULL ORDER BY provider_label",
-                (rs, n) -> new SpeakerName(rs.getString(1), rs.getString(2)), meetingId);
+        return jdbc.query("SELECT provider_label,display_name,merged_into_label FROM speakers WHERE meeting_id=? AND (display_name IS NOT NULL OR merged_into_label IS NOT NULL) ORDER BY provider_label",
+                (rs, n) -> new SpeakerName(rs.getString(1), rs.getString(2), rs.getString(3)), meetingId);
+    }
+
+    @Transactional
+    public List<SpeakerName> mergeSpeaker(UUID meetingId, String label, String target, String expectedTarget) {
+        find(meetingId);
+        jdbc.queryForObject("SELECT id FROM meetings WHERE id=? FOR UPDATE", UUID.class, meetingId);
+        for (String value : target == null ? List.of(label) : List.of(label, target)) {
+            if (value.isBlank() || value.length() > 100 || value.codePoints().anyMatch(Character::isISOControl))
+                throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_SPEAKER", "화자 식별자를 확인하세요.");
+            jdbc.update("INSERT INTO speakers(id,meeting_id,provider_label,review_state) VALUES (?,?,?,?) ON CONFLICT DO NOTHING",
+                    UUID.randomUUID(), meetingId, value, "TENTATIVE");
+        }
+        String current = jdbc.queryForObject("SELECT merged_into_label FROM speakers WHERE meeting_id=? AND provider_label=?",
+                String.class, meetingId, label);
+        if (!Objects.equals(current, expectedTarget))
+            throw new ApiException(HttpStatus.CONFLICT, "SPEAKER_MERGE_CHANGED", "화자 연결이 변경되었습니다. 새로고침 후 다시 시도하세요.");
+        if (target == null) {
+            jdbc.update("UPDATE speakers SET merged_into_label=NULL WHERE meeting_id=? AND provider_label=?", meetingId, label);
+        } else {
+            String root = jdbc.queryForObject("SELECT COALESCE(merged_into_label,provider_label) FROM speakers WHERE meeting_id=? AND provider_label=?",
+                    String.class, meetingId, target);
+            String sourceRoot = current == null ? label : current;
+            if (sourceRoot.equals(root)) throw new ApiException(HttpStatus.BAD_REQUEST, "SAME_SPEAKER_GROUP", "이미 같은 화자입니다.");
+            // Flat groups: moving a group also moves all existing aliases, preventing cycles.
+            jdbc.update("UPDATE speakers SET merged_into_label=? WHERE meeting_id=? AND (provider_label=? OR merged_into_label=?)",
+                    root, meetingId, sourceRoot, sourceRoot);
+        }
+        return speakerNames(meetingId);
     }
 
     @Transactional
     public SpeakerName renameSpeaker(UUID meetingId, String label, String displayName, String expectedName) {
         find(meetingId);
+        jdbc.queryForObject("SELECT id FROM meetings WHERE id=? FOR UPDATE", UUID.class, meetingId);
         String name = displayName.strip();
         if (name.codePoints().anyMatch(Character::isISOControl) || label.isBlank()
                 || label.codePoints().anyMatch(Character::isISOControl)) {
@@ -44,7 +102,7 @@ public class MeetingRepository {
                 UUID.randomUUID(), meetingId, label, "TENTATIVE");
         UUID speakerId = jdbc.queryForObject("SELECT id FROM speakers WHERE meeting_id=? AND provider_label=?",
                 UUID.class, meetingId, label);
-        int changed = jdbc.update("UPDATE speakers SET display_name=? WHERE id=? AND COALESCE(display_name,'')=?",
+        int changed = jdbc.update("UPDATE speakers SET display_name=? WHERE id=? AND merged_into_label IS NULL AND COALESCE(display_name,'')=?",
                 name.isEmpty() ? null : name, speakerId, expectedName);
         if (changed != 1) throw new ApiException(HttpStatus.CONFLICT, "SPEAKER_NAME_CHANGED", "다른 화면에서 화자 이름을 변경했습니다. 새로고침 후 다시 저장하세요.");
         return new SpeakerName(label, name.isEmpty() ? null : name);
@@ -66,8 +124,12 @@ public class MeetingRepository {
                                 WHERE ts.meeting_id=m.id
                                   AND (LOWER(ts.original_text) LIKE ? ESCAPE '!'
                                     OR LOWER(ts.display_text) LIKE ? ESCAPE '!'))
+                    OR EXISTS (SELECT 1 FROM speakers sp LEFT JOIN speakers root
+                                  ON root.meeting_id=sp.meeting_id AND root.provider_label=sp.merged_into_label
+                                WHERE sp.meeting_id=m.id AND LOWER(CASE WHEN sp.merged_into_label IS NULL
+                                  THEN sp.display_name ELSE root.display_name END) LIKE ? ESCAPE '!')
                  ORDER BY m.created_at DESC
-                """, this::meeting, pattern, pattern, pattern);
+                """, this::meeting, pattern, pattern, pattern, pattern);
     }
 
     public Meeting find(UUID id) {

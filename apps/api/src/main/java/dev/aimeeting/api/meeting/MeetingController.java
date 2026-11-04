@@ -56,6 +56,22 @@ public class MeetingController {
     public record RenameSpeaker(@NotBlank @Size(max = 100) String label,
             @NotNull @Size(max = 200) String displayName, @NotNull @Size(max = 200) String expectedName) {}
 
+    @PutMapping("/{id}/speaker-merge") public List<MeetingRepository.SpeakerName> mergeSpeaker(@PathVariable UUID id,
+            @Valid @RequestBody MergeSpeaker request) {
+        return meetings.mergeSpeaker(id, request.label(), request.target(), request.expectedTarget());
+    }
+    public record MergeSpeaker(@NotBlank @Size(max = 100) String label,
+            @Size(max = 100) String target, @Size(max = 100) String expectedTarget) {}
+
+    @GetMapping("/{id}/speaker-overrides") public List<MeetingRepository.SpeakerOverride> speakerOverrides(@PathVariable UUID id) {
+        return meetings.speakerOverrides(id);
+    }
+    @PutMapping("/{id}/segments/{segmentId}/speaker") public List<MeetingRepository.SpeakerOverride> overrideSpeaker(
+            @PathVariable UUID id, @PathVariable UUID segmentId, @Valid @RequestBody OverrideSpeaker request) {
+        return meetings.overrideSpeaker(id, segmentId, request.label(), request.expectedLabel());
+    }
+    public record OverrideSpeaker(@Size(max = 100) String label, @Size(max = 100) String expectedLabel) {}
+
     @PatchMapping("/{meetingId}/segments/{segmentId}")
     public TranscriptSegment correct(@PathVariable UUID meetingId, @PathVariable UUID segmentId,
                                      @Valid @RequestBody CorrectSegment request) {

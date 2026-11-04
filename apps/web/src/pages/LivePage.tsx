@@ -9,6 +9,8 @@ import { AppLink } from '../router'
 import type { AiConfiguration, LiveEvent, Meeting } from '../types'
 import { RecordingPanel } from '../RecordingPanel'
 import { SummaryPanel } from '../SummaryPanel'
+import { TranscriptSearch } from '../TranscriptSearch'
+import { SegmentSpeaker } from '../SegmentSpeaker'
 import { MeetingTools } from '../MeetingTools'
 import { SpeakerNames } from '../SpeakerNames'
 
@@ -30,10 +32,18 @@ export function LivePage({ meetingId, onUnauthorized }: { meetingId: string; onU
   const [stopping, setStopping] = useState(false)
   const [aiConfiguration, setAiConfiguration] = useState<AiConfiguration>()
   const [speakerNames, setSpeakerNames] = useState<Record<string, string>>({})
+  const [speakerMerges, setSpeakerMerges] = useState<Record<string, string>>({})
+  const [speakerOverrides, setSpeakerOverrides] = useState<Record<string, string>>({})
   useEffect(() => {
     let active = true
+    api.getSpeakerOverrides(meetingId).then(values => {
+      if (active) setSpeakerOverrides(Object.fromEntries(values.map(item => [item.segmentId, item.label])))
+    }).catch(caught => { if (active) setError(caught instanceof Error ? caught.message : '화자 수정을 불러오지 못했습니다.') })
     api.getSpeakerNames(meetingId).then(values => {
-      if (active) setSpeakerNames(Object.fromEntries(values.filter(item => item.displayName).map(item => [item.label, item.displayName!])))
+      if (active) {
+        setSpeakerNames(Object.fromEntries(values.filter(item => item.displayName).map(item => [item.label, item.displayName!])))
+        setSpeakerMerges(Object.fromEntries(values.filter(item => item.mergedInto).map(item => [item.label, item.mergedInto!])))
+      }
     }).catch(caught => { if (active) setError(caught instanceof Error ? caught.message : '화자 이름을 불러오지 못했습니다.') })
     return () => { active = false }
   }, [meetingId])
@@ -209,8 +219,12 @@ export function LivePage({ meetingId, onUnauthorized }: { meetingId: string; onU
   const partials = Object.values(state.partials).sort((a, b) => a.startMs - b.startMs)
   const allSegments = [...state.segments, ...partials]
   const defaultSpeakerName = createSpeakerLabels(allSegments)
-  const speakerName = (label?: string | null) => label && speakerNames[label] || defaultSpeakerName(label)
-  const speakerLabels = [...new Set(allSegments.map(segment => segment.speakerLabel).filter((label): label is string => Boolean(label)))]
+  const speakerName = (label?: string | null) => {
+    const root = label ? speakerMerges[label] ?? label : label
+    return root && speakerNames[root] || defaultSpeakerName(root)
+  }
+  const speakerLabels = [...new Set([...allSegments.map(segment => segment.speakerLabel), ...Object.keys(speakerMerges), ...Object.values(speakerMerges)].filter((label): label is string => Boolean(label)))]
+  const displayedSegments = state.segments.map(segment => speakerOverrides[segment.segmentId] ? { ...segment, speakerLabel: speakerOverrides[segment.segmentId] } : segment)
   const isLive = meeting.status === 'STARTED'
   const localRecording = meeting.inputSource === 'LOCAL_RECORDING'
   const liveAi = meeting.inputSource === 'LIVE'
@@ -252,8 +266,15 @@ export function LivePage({ meetingId, onUnauthorized }: { meetingId: string; onU
             <h2 className="text-lg font-black">회의록 <span className="text-sm font-semibold text-slate-500">확정 발언 {state.segments.length}개</span></h2>
             <button className="text-sm font-bold text-moss underline" onClick={() => { const panel = transcriptRef.current; if (panel) { panel.scrollTop = panel.scrollHeight; followTranscriptRef.current = true } }}>최근 발언 보기</button>
           </div>
+          <TranscriptSearch segments={displayedSegments} speakerName={speakerName} onNavigate={() => { followTranscriptRef.current = false }} />
           <div id="meeting-transcript" ref={transcriptRef} onScroll={(event) => { const panel = event.currentTarget; followTranscriptRef.current = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 80 }} tabIndex={0} className="mt-3 max-h-[70vh] scroll-mt-24 space-y-3 overflow-y-auto rounded-2xl p-1 pr-3 focus-visible:outline-moss" aria-live="polite" aria-label="실시간 회의록">
-            {state.segments.map((segment) => <TranscriptCard key={segment.segmentId} segment={segment} speakerName={speakerName(segment.speakerLabel)} onSave={async (text, revision) => { await api.correctSegment(meetingId, { ...segment, revision }, text); await loadTranscript() }} />)}
+            {displayedSegments.map((segment, index) => <div key={segment.segmentId}>
+              <TranscriptCard segment={segment} speakerName={speakerName(segment.speakerLabel)} onSave={async (text, revision) => { await api.correctSegment(meetingId, { ...segment, revision }, text); await loadTranscript() }} />
+              <SegmentSpeaker originalName={defaultSpeakerName(state.segments[index].speakerLabel)} currentLabel={speakerOverrides[segment.segmentId]} options={speakerLabels.filter(label => !speakerMerges[label]).map(label => ({ label, name: `${defaultSpeakerName(label)} · ${speakerName(label)}` }))} save={async label => {
+                const values = await api.overrideSpeaker(meetingId, segment.segmentId, label, speakerOverrides[segment.segmentId] ?? null)
+                setSpeakerOverrides(Object.fromEntries(values.map(item => [item.segmentId, item.label])))
+              }} />
+            </div>)}
             {partials.map((segment) => <TranscriptCard key={`partial-${segment.eventId}`} segment={segment} speakerName={speakerName(segment.speakerLabel)} partial />)}
             {!localRecording && state.segments.length === 0 && partials.length === 0 && (
               <div className="rounded-[2rem] border border-dashed border-moss/20 bg-white/45 py-16 text-center"><Radio className="mx-auto h-9 w-9 animate-pulse text-moss/30" /><p className="mt-4 font-black">{liveAi ? '마이크를 시작하면 실시간 자막이 표시됩니다' : '첫 가상 발언을 기다리고 있어요'}</p><p className="mt-1 text-sm text-slate-500">연결되면 임시 자막부터 차례로 표시됩니다.</p></div>
@@ -262,11 +283,15 @@ export function LivePage({ meetingId, onUnauthorized }: { meetingId: string; onU
         </div>
 
         <aside id="meeting-summary" className="scroll-mt-24 space-y-4 lg:sticky lg:top-6 lg:max-h-[calc(100dvh-3rem)] lg:self-start lg:overflow-y-auto lg:pr-2" aria-label="회의 도구">
-          <SpeakerNames labels={speakerLabels} names={speakerNames} fallback={defaultSpeakerName} save={async (label, name, expected) => {
+          <SpeakerNames labels={speakerLabels} names={speakerNames} merges={speakerMerges} fallback={defaultSpeakerName} merge={async (label, target) => {
+            const values = await api.mergeSpeaker(meetingId, label, target, speakerMerges[label] ?? null)
+            setSpeakerNames(Object.fromEntries(values.filter(item => item.displayName).map(item => [item.label, item.displayName!])))
+            setSpeakerMerges(Object.fromEntries(values.filter(item => item.mergedInto).map(item => [item.label, item.mergedInto!])))
+          }} save={async (label, name, expected) => {
             const saved = await api.renameSpeaker(meetingId, label, name, expected)
             setSpeakerNames(current => ({ ...current, [label]: saved.displayName ?? '' }))
           }} />
-          <SummaryPanel segments={state.segments} speakerName={speakerName} meetingId={meetingId} stopped={!isLive && meeting.status !== 'CREATED'} transcriptKey={state.segments.map((segment) => `${segment.segmentId}:${segment.revision}`).join('|')} hasTopic={Boolean(meeting.topicId)} aiConfiguration={aiConfiguration} onChanged={loadTranscript} />
+          <SummaryPanel segments={displayedSegments} speakerName={speakerName} meetingId={meetingId} stopped={!isLive && meeting.status !== 'CREATED'} transcriptKey={state.segments.map((segment) => `${segment.segmentId}:${segment.revision}`).join('|')} hasTopic={Boolean(meeting.topicId)} aiConfiguration={aiConfiguration} onChanged={loadTranscript} />
           <details className="rounded-2xl border border-moss/10 bg-white/70 p-4">
             <summary className="cursor-pointer text-sm font-bold text-moss">회의 상태와 이용 안내</summary>
             <div className="mt-4 space-y-4">
