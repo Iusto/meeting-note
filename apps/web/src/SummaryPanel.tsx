@@ -13,6 +13,7 @@ export function SummaryPanel({ meetingId, stopped, transcriptKey, hasTopic, aiCo
   const [suggestions, setSuggestions] = useState<CorrectionSuggestion[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const codex = aiConfiguration?.llmProvider === 'CODEX'
   const paidLlm = Boolean(aiConfiguration?.enabled && aiConfiguration.llmAvailable)
   useEffect(() => {
     let active = true
@@ -31,9 +32,10 @@ export function SummaryPanel({ meetingId, stopped, transcriptKey, hasTopic, aiCo
     finally { setBusy(false) }
   }
 
-  return <section className="mt-6 space-y-4 rounded-3xl border border-moss/10 bg-white p-6" aria-label="요약과 검토">
+  return <section className="space-y-4 rounded-3xl border border-moss/10 bg-white p-6" aria-label="요약과 검토">
     <h2 className="text-xl font-black">요약과 검토</h2>
-    <p className="text-sm leading-6 text-slate-500">{paidLlm ? '요약과 교정 버튼을 누르면 유료 AI 요청이 발생할 수 있습니다. 자동으로 제출하지 않으며, 결과는 항상 원문 근거와 함께 검토하세요.' : '현재 요약은 확정 발언을 인용하는 가상 결과입니다. 실제 AI의 요약·교정 품질을 나타내지 않습니다.'} 원문 근거 없이 결정·담당자·기한을 만들지 않습니다.</p>
+    <p className="text-sm leading-6 text-slate-500">{codex ? '요약·교정은 서버 PC의 Codex 요금제로 처리합니다. 별도 OpenAI API 요금은 없으며 Codex 사용 한도를 소비합니다. PC와 Codex 로그인이 유지되어야 합니다.' : paidLlm ? '요약과 교정 버튼을 누르면 유료 AI 요청이 발생할 수 있습니다. 자동으로 제출하지 않으며, 결과는 항상 원문 근거와 함께 검토하세요.' : '현재 요약은 확정 발언을 인용하는 가상 결과입니다. 실제 AI의 요약·교정 품질을 나타내지 않습니다.'} 원문 근거 없이 결정·담당자·기한을 만들지 않습니다.</p>
+    {busy && <p role="status" className="text-sm font-bold text-moss">{codex ? 'Codex가 처리 중입니다. 긴 회의는 몇 분 걸릴 수 있습니다.' : 'AI가 처리 중입니다.'}</p>}
     {error && <p role="alert" className="rounded-xl bg-red-50 p-3 text-sm text-red-700">{error}</p>}
     <div className="flex flex-wrap gap-3">
       <button className="button-secondary" disabled={busy || !stopped || !transcriptKey} onClick={() => void act(async () => { setSummary(await knowledgeApi.generateSummary(meetingId)) })}>{summary ? `${paidLlm ? 'AI' : '가상'} 요약 다시 생성` : `${paidLlm ? 'AI' : '가상'} 요약 생성`}</button>

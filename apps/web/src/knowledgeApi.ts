@@ -3,12 +3,12 @@ import { request } from './api'
 export interface Topic { id: string; name: string; description: string | null }
 export interface Term {
   id: string; canonical: string; meaning: string; aliases: string[]
-  status: 'PENDING' | 'APPROVED' | 'REJECTED'; source: 'MANUAL' | 'MOCK' | 'OPENAI'
+  status: 'PENDING' | 'APPROVED' | 'REJECTED'; source: 'MANUAL' | 'MOCK' | 'OPENAI' | 'CODEX'
 }
 export type TermInput = Pick<Term, 'canonical' | 'meaning' | 'aliases' | 'status'>
 export interface Evidence { text: string; sourceSegmentIds: string[] }
 export interface MeetingSummary {
-  id: string; meetingId: string; version: number; provider: 'MOCK' | 'OPENAI'; stale: boolean
+  id: string; meetingId: string; version: number; provider: 'MOCK' | 'OPENAI' | 'CODEX'; stale: boolean
   content: {
     summary: string; sourceSegmentIds: string[]; decisions: Evidence[]
     actionItems: (Evidence & { assignee: string | null; dueDate: string | null })[]

@@ -31,7 +31,7 @@ Python Worker/pyannote, 로컬 Whisper, Redis, 유료 구독 로직은 **현재 
 - Deepgram Live Listen 스트림은 서버 WebSocket relay에서 처리하고 `Interim/Final`·화자·단어 timestamp·오류·세션 교체를 **공식 계약에 맞게** 매핑한다.
 - Deepgram 최신 diarization: 스트리밍은 `diarize_model=latest`(현재 v1), 배치는 `latest`(현재 v2). `diarize=true`와 동시 사용하지 않는다. **공식 레퍼런스 재확인 후 실제 코드화**.
 - Keyterm은 `keyterm` 파라미터를 반복하며, 최대 100개. 개별 용어 승인이 필수.
-- GPT-6.1 Sol은 Responses API Structured Outputs를 사용하고 모든 교정은 segment ID와 증거 구간을 참조하도록 한다.
+- GPT-6.1 Sol은 기본적으로 Windows Codex CLI의 ChatGPT 로그인과 JSON schema 출력을 사용한다(ADR-023). 별도 opt-in OpenAI API 모드는 Responses API Structured Outputs를 사용한다. 모든 교정은 segment ID와 증거 구간을 참조하도록 한다.
 - 숫자와 고유번호는 불일치 시 확인 대상에 남기고 자동 덮어쓰지 않는다.
 
 ## 완료 보고 형식

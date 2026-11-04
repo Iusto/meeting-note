@@ -44,3 +44,11 @@
 새로고침 후 같은 브라우저의 미종료 녹음은 청크 번호·형식을 유지해 재개한다. 독립 MediaRecorder WebM 세션은 원본 청크의 해시를 검증하고 Docker에 포함한 FFmpeg로 remux한다. 파일을 단순 이어 붙이지 않으며, 병합 실패 시 원본 청크와 미완료 상태를 남겨 재시도한다. 중단 동안의 소리와 브라우저 종료 직전 미저장 청크는 복구할 수 없다. Ogg 이어 녹음은 지원하지 않는다.
 
 WebM 병합 방식의 근거: [FFmpeg 공식 concat demuxer 계약](https://github.com/FFmpeg/FFmpeg/blob/master/doc/demuxers.texi). 동일 코덱·타임베이스를 유지하며 원본 청크는 수정하지 않는다.
+
+## ADR-023 — Codex 구독 로그인으로 LLM 생성 (ACCEPTED, 2026-11-04)
+
+사용자가 보유한 ChatGPT/Codex 구독으로 버튼 실행 시 요약하도록 요청했다. 개인 PC에서 `codex exec`를 실행하는 인증 bridge를 도입한다. 기본 실행 스크립트는 OpenAI API 키를 비우고 ChatGPT 로그인을 강제한다. API 모드는 명시적인 `-UseOpenAiApi` 선택으로만 유지하며 자동 fallback하지 않는다. ADR-007의 기본 전송 경로를 대체하되 모델·증거 검증·원본 보존은 유지한다.
+
+Codex 실행은 별도 API 달러 예산을 예약하지 않으며 구독 사용량과 한도는 적용된다. Deepgram은 계속 별도 유료다. 기존 불확실 API 기록을 삭제하거나 실제 청구로 단정하지 않는다. PC/bridge 가동이 필요하고 추론은 OpenAI 서버에서 수행된다. CLI 도구/검색 비활성화, 요청 토큰, 일회성 세션, 한 작업 제한, 10분 제한으로 개인용 범위를 유지한다.
+
+공식 계약: [Codex 비대화형 실행](https://learn.chatgpt.com/docs/non-interactive-mode), [로그인](https://learn.chatgpt.com/docs/auth).

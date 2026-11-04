@@ -19,7 +19,9 @@ flowchart TD
   API --> DB[(PostgreSQL)]
   API --> FILES[(로컬 오디오 파일)]
   API --> JOB[비동기 교정·요약 작업]
-  JOB --> SOL[OpenAI Responses
+  JOB --> BRIDGE[Windows 토큰 인증 bridge]
+  BRIDGE --> CLI[Codex CLI · ChatGPT 로그인]
+  CLI --> SOL[OpenAI 모델 서버
 gpt-6.1-sol]
   JOB --> DB
 ```
@@ -28,7 +30,7 @@ gpt-6.1-sol]
 - **브라우저:** 하나의 `getUserMedia` 스트림을 MediaRecorder 원본 녹음과 AudioWorklet PCM16 16kHz mono 전사 송신에 함께 사용한다. 직접 Deepgram/OpenAI 장기 키에 접근하지 않는다.
 - **Spring Boot:** 회의 상태/인증/저장소/비동기 작업/비용 기록, 오디오 WebSocket relay. 실시간 스트림에 DB 또는 LLM이 블로킹 영향을 주지 않도록 메모리 큐·별도 실행자/백프레셔 설정.
 - **Deepgram:** 첫 후보 `model=nova-3&language=ko&interim_results=true&diarize_model=latest&keyterm=...`. 실제 endpoint/파라미터 계약은 구현 당시 문서에 따라 검증. `diarize_model=v2`는 **스트리밍 불가**.
-- **OpenAI:** 요약·교정·용어 후보에만 사용. `gpt-6.1-sol` Standard / Responses / 구조화 출력.
+- **Codex bridge:** 요약·교정·용어 후보에 `gpt-6.1-sol` CLI/schema 출력을 사용. PC의 ChatGPT 로그인을 유지하며 도구·검색은 차단한다. 구독 잔여율은 app-server의 `account/rateLimits/read`로 조회한다. 명시적 API 모드에서만 Responses API를 사용한다.
 - **DB:** 메타데이터, 확정 발언, 화자, 교정 버전, 요약, 사용량.
 - **디스크:** 녹음 청크·합쳐진 녹음, SHA-256, 보관 기간 설정. 외부 공개 금지.
 
@@ -55,3 +57,9 @@ gpt-6.1-sol]
 
 ## 추후 확장시 고려, 지금은 배제
 Redis, Kafka, K8s, 벡터 DB, 로컬 pyannote, GPU 서버, WebRTC 별도 SFU, 테넌트·결제 시스템. 공급자 변경이 실제 필요할 때만 second adapter 추가.
+
+## 2026-11-04: 개인 PC Codex 구독 경로 (ADR-023)
+
+요약·교정·용어 후보는 기존 segment/evidence 검증과 DB 저장을 유지하고 생성 전송만 교체한다. 브라우저 → Spring API → `host.docker.internal:8767`의 토큰 인증 bridge → Windows `codex exec` → 검증 → 저장. ChatGPT 로그인은 PC의 Codex 저장소에만 남으며 Docker에 복사하지 않는다. CLI는 도구·검색을 끄고 임시 디렉터리에서 ephemeral/schema 출력으로 실행한다. 동시 작업 1개, 요청별 10분 제한, 결과/스키마 임시 파일 삭제를 적용한다. 별도 API 자동 fallback은 없다. 실패는 로그인·구독 한도·연결·모델·시간초과 코드로 UI에 전달한다.
+
+모델 추론은 OpenAI 서버에서 진행되며 PC는 CLI 실행 호스트다. 구독 한도는 그대로 적용되고 이 경로는 API 달러 원장에 예약/정산하지 않는다. Deepgram과 기존 API 기록은 기존 비용 정책을 유지한다. bridge 포트는 웹 프록시나 Tailscale Serve로 공개하지 않는다.

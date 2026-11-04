@@ -128,6 +128,25 @@ class OpenAiPocClientTest {
         assertThat(bodies).hasSize(2);
     }
 
+    @Test void exposesSafeModelFailureWithoutProviderSecrets() throws Exception {
+        respond(404, "{\"error\":{\"code\":\"model_not_found\",\"message\":\"private-secret meeting text\"}}");
+        var result = call().get(3, TimeUnit.SECONDS);
+        assertThat(result.failure().code()).isEqualTo("OPENAI_MODEL_UNAVAILABLE");
+        assertThat(result.failure().getMessage()).contains("모델", "접근 권한").doesNotContain("private-secret", "meeting text");
+        assertThat(result.usage()).isNull();
+        assertThat(bodies).hasSize(1);
+    }
+
+    @Test void distinguishesQuotaFromRateLimitAndAuthentication() {
+        assertThat(OpenAiPocClient.httpFailure(429,
+                "{\"error\":{\"code\":\"insufficient_quota\"}}".getBytes(StandardCharsets.UTF_8)).code())
+                .isEqualTo("OPENAI_QUOTA_EXCEEDED");
+        assertThat(OpenAiPocClient.httpFailure(429, new byte[0]).code()).isEqualTo("OPENAI_RATE_LIMITED");
+        assertThat(OpenAiPocClient.httpFailure(401, new byte[0]).code()).isEqualTo("OPENAI_AUTH_FAILED");
+        assertThat(OpenAiPocClient.httpFailure(403, new byte[0]).code()).isEqualTo("OPENAI_ACCESS_DENIED");
+        assertThat(OpenAiPocClient.httpFailure(503, new byte[0]).code()).isEqualTo("OPENAI_UNAVAILABLE");
+    }
+
     @Test void refusesUnsafeRequestFlagsAndInsufficientReservationBeforeConnecting() {
         ObjectNode stored = payload().put("store", true);
         assertThatThrownBy(() -> OpenAiPocClient.requestLoopback(endpoint, stored, limits()))

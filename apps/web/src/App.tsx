@@ -18,7 +18,7 @@ function Shell({ children, onLogout }: PropsWithChildren<{ onLogout: () => Promi
     <div className="min-h-screen bg-cream text-ink">
       <header className="border-b border-moss/10 bg-cream/90 px-5 py-4 backdrop-blur md:px-10">
         <div className="mx-auto flex max-w-7xl items-center justify-between"><Brand /><div className="flex items-center gap-2"><span className="rounded-full bg-mint px-3 py-1.5 text-xs font-black text-moss">AI MOCK MODE</span><button type="button" onClick={() => void onLogout()} className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-xs font-black text-moss hover:bg-mint focus:outline-none focus-visible:ring-2 focus-visible:ring-moss"><LogOut className="h-4 w-4" />로그아웃</button></div></div>
-        <nav className="mx-auto mt-3 flex max-w-7xl gap-5 text-xs font-bold text-moss" aria-label="주 메뉴"><AppLink href="/meetings">회의</AppLink><AppLink href="/topics">주제·용어 사전</AppLink><AppLink href="/usage">사용량·예산</AppLink></nav>
+        <nav className="mx-auto mt-3 flex max-w-7xl gap-5 text-xs font-bold text-moss" aria-label="주 메뉴"><AppLink href="/meetings">회의</AppLink><AppLink href="/topics">주제·용어 사전</AppLink><AppLink href="/usage">사용량</AppLink></nav>
       </header>
       {children}
     </div>

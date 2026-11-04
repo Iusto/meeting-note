@@ -15,6 +15,7 @@ export interface Meeting {
 export interface AiConfiguration {
   enabled: boolean
   speechAvailable: boolean
+  llmProvider?: 'CODEX' | 'OPENAI'
   llmAvailable: boolean
   maximumAudioSeconds: number
   maximumMeetingUsd: number

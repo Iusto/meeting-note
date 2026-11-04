@@ -18,13 +18,18 @@ class PrivateStartupTests(unittest.TestCase):
         scratch.mkdir(parents=True, exist_ok=True)
         self.root = Path(tempfile.mkdtemp(dir=scratch))
         (self.root / "scripts").mkdir()
-        shutil.copyfile(PROJECT / "scripts/start-private.ps1", self.root / "scripts/start-private.ps1")
+        script = (PROJECT / "scripts/start-private.ps1").read_text(encoding="utf-8")
+        for key in ("OPENAI_API_KEY", "DEEPGRAM_API_KEY"):
+            script = script.replace(f"[Environment]::GetEnvironmentVariable('{key}', 'User')", "''")
+        (self.root / "scripts/start-private.ps1").write_text(script, encoding="utf-8")
+        (self.root / "scripts/start-codex-bridge.ps1").write_text(
+            "$env:AI_LLM_PROVIDER='codex'\n$env:CODEX_BRIDGE_TOKEN='mock-bridge'\n", encoding="utf-8")
         self.bin = self.root / "bin"
         self.bin.mkdir()
         (self.bin / "docker.ps1").write_text("""
 $global:LASTEXITCODE = 0
 if ($args[0] -eq 'info') { Write-Output $env:TEST_ENGINE; return }
-Add-Content $env:TEST_CALLS (ConvertTo-Json -Compress @{tool='docker'; args=@($args); paid=$env:PAID_API_TESTS_ENABLED; deepgram=![string]::IsNullOrWhiteSpace($env:DEEPGRAM_API_KEY); openai=![string]::IsNullOrWhiteSpace($env:OPENAI_API_KEY)})
+Add-Content $env:TEST_CALLS (ConvertTo-Json -Compress @{tool='docker'; args=@($args); provider=$env:AI_LLM_PROVIDER; paid=$env:PAID_API_TESTS_ENABLED; deepgram=![string]::IsNullOrWhiteSpace($env:DEEPGRAM_API_KEY); openai=![string]::IsNullOrWhiteSpace($env:OPENAI_API_KEY)})
 if ($args -contains 'up' -and $env:TEST_FAIL_UP -eq '1') { $global:LASTEXITCODE = 1 }
 """, encoding="utf-8")
         (self.bin / "tailscale.ps1").write_text("""
@@ -42,8 +47,9 @@ try {
     function Start-Sleep {}
     function Start-Process { param([string]$FilePath) Add-Content $env:TEST_CALLS (ConvertTo-Json -Compress @{tool='browser'; url=$FilePath}) }
     $openMeeting = $env:TEST_OPEN_MEETING -eq '1'
+    $apiMode = $env:TEST_API_MODE -eq '1'
     if ($env:TEST_ENABLE_PAID -eq '1') {
-        & (Join-Path $PSScriptRoot 'scripts/start-private.ps1') -EnablePaidAi -OpenMeeting:$openMeeting
+        & (Join-Path $PSScriptRoot 'scripts/start-private.ps1') -EnablePaidAi -OpenMeeting:$openMeeting -UseOpenAiApi:$apiMode
     } else {
         & (Join-Path $PSScriptRoot 'scripts/start-private.ps1')
     }
@@ -107,6 +113,7 @@ try {
         self.assertFalse(any(c["tool"] == "browser" for c in self.calls()))
 
     def test_explicit_paid_start_passes_existing_keys_without_persisting_or_printing_them(self):
+        self.env["TEST_API_MODE"] = "1"
         self.env["TEST_ENABLE_PAID"] = "1"
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -118,13 +125,21 @@ try {
         self.assertNotIn("caller-openai-secret", output_and_file)
 
     def test_explicit_paid_start_requires_both_provider_keys(self):
+        self.env["TEST_API_MODE"] = "1"
         self.env["TEST_ENABLE_PAID"] = "1"
         self.env["OPENAI_API_KEY"] = ""
         result = self.run_script()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("requires DEEPGRAM_API_KEY and OPENAI_API_KEY", result.stdout + result.stderr)
+        self.assertIn("requires OPENAI_API_KEY", result.stdout + result.stderr)
         self.assertFalse((self.root / ".env").exists())
         self.assertEqual(self.calls(), [])
+
+    def test_codex_default_clears_api_key_and_passes_only_speech_key(self):
+        self.env["TEST_ENABLE_PAID"] = "1"
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        docker_calls = [call for call in self.calls() if call["tool"] == "docker"]
+        self.assertTrue(all(call["provider"] == "codex" and call["deepgram"] and not call["openai"] for call in docker_calls))
 
     def test_inaccessible_engine_stops_before_configuration(self):
         self.env["TEST_ENGINE"] = "windows"

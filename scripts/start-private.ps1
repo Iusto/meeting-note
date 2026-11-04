@@ -1,11 +1,11 @@
 [CmdletBinding()]
-param([switch]$EnablePaidAi, [switch]$OpenMeeting)
+param([switch]$EnablePaidAi, [switch]$OpenMeeting, [switch]$UseOpenAiApi)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $savedEnvironment = @{}
 foreach ($name in @('PAID_API_TESTS_ENABLED', 'DEEPGRAM_API_KEY', 'OPENAI_API_KEY',
-        'TAILSCALE_HOST', 'WEB_PORT', 'APP_OWNER_TOKEN', 'POSTGRES_PASSWORD')) {
+        'TAILSCALE_HOST', 'WEB_PORT', 'APP_OWNER_TOKEN', 'POSTGRES_PASSWORD', 'AI_LLM_PROVIDER', 'CODEX_BRIDGE_TOKEN')) {
     $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 
@@ -20,17 +20,25 @@ Push-Location $projectRoot
 try {
     $deepgramKey = ''
     $openAiKey = ''
+    $env:AI_LLM_PROVIDER = 'openai'
+    $env:CODEX_BRIDGE_TOKEN = ''
     if ($EnablePaidAi) {
         $deepgramKey = [string]$savedEnvironment['DEEPGRAM_API_KEY']
         if ([string]::IsNullOrWhiteSpace($deepgramKey)) {
             $deepgramKey = [string][Environment]::GetEnvironmentVariable('DEEPGRAM_API_KEY', 'User')
         }
-        $openAiKey = [string]$savedEnvironment['OPENAI_API_KEY']
-        if ([string]::IsNullOrWhiteSpace($openAiKey)) {
-            $openAiKey = [string][Environment]::GetEnvironmentVariable('OPENAI_API_KEY', 'User')
+        if ([string]::IsNullOrWhiteSpace($deepgramKey)) {
+            throw 'Live transcription requires DEEPGRAM_API_KEY in the process or Windows user environment.'
         }
-        if ([string]::IsNullOrWhiteSpace($deepgramKey) -or [string]::IsNullOrWhiteSpace($openAiKey)) {
-            throw 'Paid AI requires DEEPGRAM_API_KEY and OPENAI_API_KEY in the process or Windows user environment.'
+        if ($UseOpenAiApi) {
+            $openAiKey = [string]$savedEnvironment['OPENAI_API_KEY']
+            if ([string]::IsNullOrWhiteSpace($openAiKey)) {
+                $openAiKey = [string][Environment]::GetEnvironmentVariable('OPENAI_API_KEY', 'User')
+            }
+            if ([string]::IsNullOrWhiteSpace($openAiKey)) { throw 'OpenAI API mode requires OPENAI_API_KEY.' }
+            $env:AI_LLM_PROVIDER = 'openai'
+        } else {
+            & (Join-Path $PSScriptRoot 'start-codex-bridge.ps1')
         }
     }
 

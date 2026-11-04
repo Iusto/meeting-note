@@ -39,6 +39,7 @@ public final class OpenAiMeetingOrchestrator {
     private final OpenAiPocLimits limits;
     private final String priceVersion;
     private final Transport transport;
+    private final boolean subscription;
     private final BigDecimal maximumMeetingUsd;
     private final long maximumMeetingSeconds;
 
@@ -53,6 +54,15 @@ public final class OpenAiMeetingOrchestrator {
                                      CorrectionService corrections, TopicService topics, OpenAiPocLimits limits,
                                      String priceVersion, BigDecimal maximumMeetingUsd, long maximumMeetingSeconds,
                                      Transport transport) {
+        this(ledger, summaries, corrections, topics, limits, priceVersion, maximumMeetingUsd,
+                maximumMeetingSeconds, transport, false);
+    }
+
+    public OpenAiMeetingOrchestrator(CostLedgerService ledger, SummaryService summaries,
+                                     CorrectionService corrections, TopicService topics, OpenAiPocLimits limits,
+                                     String priceVersion, BigDecimal maximumMeetingUsd, long maximumMeetingSeconds,
+                                     Transport transport, boolean subscription) {
+        this.subscription = subscription;
         this.ledger = Objects.requireNonNull(ledger);
         this.summaries = Objects.requireNonNull(summaries);
         this.corrections = Objects.requireNonNull(corrections);
@@ -79,7 +89,7 @@ public final class OpenAiMeetingOrchestrator {
         }
         return partials.thenCompose(current -> reduceSummaries(requestId, sequence, meetingId,
                         snapshot.transcript(), current))
-                .thenApply(summary -> summaries.storeAiGenerated(snapshot, summary));
+                .thenApply(summary -> summaries.storeAiGenerated(snapshot, summary, subscription ? "CODEX" : "OPENAI"));
     }
 
     public CompletableFuture<List<CorrectionSuggestion>> generateCorrections(UUID requestId, UUID meetingId) {
@@ -104,13 +114,15 @@ public final class OpenAiMeetingOrchestrator {
         ObjectNode payload = MeetingAiPayloads.topicCandidatesRequest(snapshot.topic(), snapshot.existingTerms(),
                 limits.maxOutputTokens());
         OpenAiPocClient.validateRequest(payload, limits);
-        ledger.reserve(requestId, new ReservationRequest(null, PROVIDER, MODEL, "GLOSSARY", priceVersion,
-                limits.maximumEstimatedUsd(), 1, topicId));
-        ledger.startDispatch(requestId);
+        if (!subscription) {
+            ledger.reserve(requestId, new ReservationRequest(null, PROVIDER, MODEL, "GLOSSARY", priceVersion,
+                    limits.maximumEstimatedUsd(), 1, topicId));
+            ledger.startDispatch(requestId);
+        }
         return dispatch(requestId, payload).thenApply(response -> {
             requireCompleted(response);
             return topics.storeAiSuggestions(snapshot,
-                    MeetingAiPayloads.parseTopicCandidates(response.outputJson(), snapshot.existingTerms()));
+                    MeetingAiPayloads.parseTopicCandidates(response.outputJson(), snapshot.existingTerms()), subscription ? "CODEX" : "OPENAI");
         });
     }
 
@@ -174,6 +186,7 @@ public final class OpenAiMeetingOrchestrator {
 
     private void claim(UUID requestId, UUID meetingId, String operation, long audioSeconds) {
         Objects.requireNonNull(requestId, "requestId");
+        if (subscription) return;
         ledger.reserveBounded(requestId, new ReservationRequest(meetingId, PROVIDER, MODEL, operation, priceVersion,
                 limits.maximumEstimatedUsd(), 1), maximumMeetingUsd, maximumMeetingSeconds);
         ledger.startDispatch(requestId);
@@ -198,6 +211,7 @@ public final class OpenAiMeetingOrchestrator {
     }
 
     private CompletableFuture<OpenAiPocClient.Response> dispatch(UUID requestId, ObjectNode payload) {
+        if (subscription) return transport.request(payload);
         CompletableFuture<OpenAiPocClient.Response> exchange;
         try {
             exchange = transport.request(payload);
@@ -211,7 +225,16 @@ public final class OpenAiMeetingOrchestrator {
         return bounded.handle((response, failure) -> {
             if (failure != null || response == null || response.usage() == null) {
                 ledger.markUncertain(requestId);
-                throw new CompletionException(new IllegalStateException("OpenAI dispatch outcome is uncertain"));
+                if (response != null && response.failure() != null) throw new CompletionException(response.failure());
+                Throwable cause = failure;
+                while (cause instanceof CompletionException && cause.getCause() != null) cause = cause.getCause();
+                boolean timeout = cause instanceof java.util.concurrent.TimeoutException
+                        || (cause != null && "OpenAI request timed out".equals(cause.getMessage()));
+                throw new CompletionException(new dev.aimeeting.api.web.ApiException(
+                        org.springframework.http.HttpStatus.BAD_GATEWAY,
+                        timeout ? "OPENAI_TIMEOUT" : "OPENAI_CONNECTION_FAILED",
+                        timeout ? "OpenAI 응답 시간이 초과되었습니다. 처리 여부와 비용은 확인되지 않았습니다. 잠시 후 다시 확인하세요."
+                                : "OpenAI 응답을 확인하지 못했습니다. 서버의 네트워크 연결을 확인하세요. 처리 여부와 비용은 확인되지 않았습니다."));
             }
             OpenAiPocClient.TokenUsage usage = response.usage();
             if (!validUsage(usage)) {
@@ -238,7 +261,11 @@ public final class OpenAiMeetingOrchestrator {
 
     private static void requireCompleted(OpenAiPocClient.Response response) {
         if (response.status() != OpenAiPocClient.Status.COMPLETED) {
-            throw new IllegalStateException("OpenAI request did not complete: " + response.status());
+            throw new dev.aimeeting.api.web.ApiException(org.springframework.http.HttpStatus.BAD_GATEWAY,
+                    "OPENAI_" + response.status(),
+                    response.status() == OpenAiPocClient.Status.INCOMPLETE
+                            ? "AI 결과가 출력 한도 등으로 끝까지 생성되지 않았습니다. 서버의 출력 한도 설정을 확인하세요."
+                            : "OpenAI가 완성된 결과를 반환하지 않았습니다. 요청 내용과 서비스 상태를 확인하세요.");
         }
     }
 

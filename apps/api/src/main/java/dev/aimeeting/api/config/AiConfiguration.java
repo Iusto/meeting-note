@@ -59,7 +59,13 @@ public final class AiConfiguration {
 
     public boolean speechAvailable() { return enabled() && !deepgramApiKey().isBlank(); }
 
-    public boolean llmAvailable() { return enabled() && !openAiApiKey().isBlank(); }
+    public boolean codexEnabled() { return "codex".equals(environment.getProperty("AI_LLM_PROVIDER", "openai")); }
+
+    public String codexBridgeUrl() { return environment.getProperty("CODEX_BRIDGE_URL", "http://host.docker.internal:8767/generate"); }
+
+    public String codexBridgeToken() { return secret("CODEX_BRIDGE_TOKEN"); }
+
+    public boolean llmAvailable() { return codexEnabled() ? !codexBridgeToken().isBlank() : enabled() && !openAiApiKey().isBlank(); }
 
     public int maximumAudioSeconds() { return maximumAudioSeconds; }
 
@@ -93,8 +99,10 @@ public final class AiConfiguration {
         if (!validationErrors.isEmpty()) {
             throw new IllegalStateException("Invalid paid AI configuration: " + String.join("; ", validationErrors));
         }
-        if (deepgramApiKey().isBlank() || openAiApiKey().isBlank()) {
-            throw new IllegalStateException("Paid AI requires both DEEPGRAM_API_KEY and OPENAI_API_KEY");
+        if (deepgramApiKey().isBlank() || !llmAvailable()) {
+            throw new IllegalStateException(codexEnabled()
+                    ? "Codex mode requires DEEPGRAM_API_KEY and CODEX_BRIDGE_TOKEN"
+                    : "Paid AI requires both DEEPGRAM_API_KEY and OPENAI_API_KEY");
         }
     }
 

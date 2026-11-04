@@ -76,4 +76,19 @@ class PaidApiGuardTest {
                 Path.of("target"), enabled, 100);
         return new AiConfiguration(properties, environment);
     }
+
+    @Test
+    void codexModeNeedsNoOpenAiKeyAndDoesNotFallBackToIt() {
+        MockEnvironment environment = new MockEnvironment()
+                .withProperty("AI_LLM_PROVIDER", "codex")
+                .withProperty("DEEPGRAM_API_KEY", "speech-test")
+                .withProperty("CODEX_BRIDGE_TOKEN", "a".repeat(64));
+        AiConfiguration configuration = configuration(true, environment);
+        assertThatCode(() -> new PaidApiGuard(configuration).validateOptIn()).doesNotThrowAnyException();
+        assertThat(configuration.llmAvailable()).isTrue();
+        assertThat(configuration.openAiApiKey()).isEmpty();
+        environment.setProperty("CODEX_BRIDGE_TOKEN", "");
+        environment.setProperty("OPENAI_API_KEY", "must-not-be-used");
+        assertThat(configuration.llmAvailable()).isFalse();
+    }
 }

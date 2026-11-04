@@ -31,7 +31,12 @@ public final class OpenAiPocClient {
 
     public enum Status { COMPLETED, REFUSED, INCOMPLETE, FAILED, HTTP_ERROR }
     public record TokenUsage(long inputTokens, long outputTokens, long totalTokens) {}
-    public record Response(Status status, String responseId, String outputJson, TokenUsage usage) {}
+    public record Response(Status status, String responseId, String outputJson, TokenUsage usage,
+                           dev.aimeeting.api.web.ApiException failure) {
+        public Response(Status status, String responseId, String outputJson, TokenUsage usage) {
+            this(status, responseId, outputJson, usage, null);
+        }
+    }
 
     private OpenAiPocClient() {}
 
@@ -104,7 +109,7 @@ public final class OpenAiPocClient {
                 return;
             }
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                result.complete(new Response(Status.HTTP_ERROR, null, null, null));
+                result.complete(new Response(Status.HTTP_ERROR, null, null, null, httpFailure(response.statusCode(), response.body())));
                 return;
             }
             try {
@@ -114,6 +119,45 @@ public final class OpenAiPocClient {
             }
         });
         return result;
+    }
+
+    // Never return provider messages: they may contain credentials or meeting text.
+    static dev.aimeeting.api.web.ApiException httpFailure(int status, byte[] body) {
+        String code = "";
+        String param = "";
+        try {
+            JsonNode error = JSON.readTree(body).path("error");
+            code = error.path("code").asText("");
+            param = error.path("param").asText("");
+        } catch (Exception ignored) { /* Status still supplies a safe fallback. */ }
+        org.slf4j.LoggerFactory.getLogger(OpenAiPocClient.class).warn(
+                "OpenAI rejected request: status={}, code={}, param={}", status,
+                safeDiagnostic(code), safeDiagnostic(param));
+        String category;
+        String message;
+        if (status == 401) {
+            category = "AUTH_FAILED"; message = "OpenAI API 인증에 실패했습니다. 서버의 API 키를 확인하세요.";
+        } else if (status == 404 || "model_not_found".equals(code)) {
+            category = "MODEL_UNAVAILABLE"; message = "설정된 OpenAI 모델을 사용할 수 없습니다. 모델 이름과 프로젝트의 접근 권한을 확인하세요.";
+        } else if ("insufficient_quota".equals(code)) {
+            category = "QUOTA_EXCEEDED"; message = "OpenAI API 사용 한도 또는 잔액이 부족합니다. 결제와 프로젝트 한도를 확인하세요.";
+        } else if (status == 403) {
+            category = "ACCESS_DENIED"; message = "OpenAI API 접근이 거부되었습니다. 프로젝트 권한과 이용 제한을 확인하세요.";
+        } else if (status == 429) {
+            category = "RATE_LIMITED"; message = "OpenAI 요청 한도를 초과했습니다. 잠시 후 다시 시도하세요.";
+        } else if (status >= 500) {
+            category = "UNAVAILABLE"; message = "OpenAI 서비스에서 오류가 발생했습니다. 잠시 후 다시 시도하세요.";
+        } else if ("model".equals(param)) {
+            category = "MODEL_CONFIGURATION"; message = "OpenAI가 모델 설정을 거부했습니다. 모델의 API 지원 여부와 프로젝트 설정을 확인하세요.";
+        } else {
+            category = "REQUEST_REJECTED"; message = "OpenAI가 AI 요청을 거부했습니다. 서버의 모델과 요청 설정을 확인하세요.";
+        }
+        return new dev.aimeeting.api.web.ApiException(org.springframework.http.HttpStatus.BAD_GATEWAY,
+                "OPENAI_" + category, message);
+    }
+
+    private static String safeDiagnostic(String value) {
+        return value.matches("[A-Za-z0-9_.\\[\\]-]{1,80}") ? value : "unspecified";
     }
 
     static void validateRequest(ObjectNode payload, OpenAiPocLimits limits) {

@@ -6,6 +6,9 @@ spring:
     password: ${DATABASE_PASSWORD:ai_meeting}
   flyway:
     enabled: true
+  mvc:
+    async:
+      request-timeout: 1800000
   jackson:
     default-property-inclusion: non_null
 management:

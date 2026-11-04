@@ -89,7 +89,7 @@ class OpenAiMeetingOrchestratorIntegrationTest {
                 new OpenAiPocClient.Response(OpenAiPocClient.Status.REFUSED, "resp-1", null,
                         new OpenAiPocClient.TokenUsage(10, 2, 12))));
         assertThatThrownBy(() -> refusal.generateSummary(refused, fixture.meeting().id()).join())
-                .hasRootCauseMessage("OpenAI request did not complete: REFUSED");
+                .hasRootCauseInstanceOf(ApiException.class).rootCause().extracting("code").isEqualTo("OPENAI_REFUSED");
         assertSettledWithoutSummary(refused, fixture.meeting().id());
 
         UUID invalid = UUID.randomUUID();
@@ -110,7 +110,7 @@ class OpenAiMeetingOrchestratorIntegrationTest {
             return CompletableFuture.failedFuture(new IllegalStateException("synthetic timeout"));
         });
         assertThatThrownBy(() -> timeout.generateSummary(failed, fixture.meeting().id()).join())
-                .hasRootCauseMessage("OpenAI dispatch outcome is uncertain");
+                .hasRootCauseInstanceOf(ApiException.class).rootCause().extracting("code").isEqualTo("OPENAI_CONNECTION_FAILED");
         assertThat(calls).hasValue(1);
         assertState(failed, "UNCERTAIN");
 
@@ -119,8 +119,26 @@ class OpenAiMeetingOrchestratorIntegrationTest {
                 new OpenAiPocClient.Response(OpenAiPocClient.Status.COMPLETED, "resp-2",
                         summaryJson(fixture.segment().id()), null)));
         assertThatThrownBy(() -> noUsage.generateSummary(missing, fixture.meeting().id()).join())
-                .hasRootCauseMessage("OpenAI dispatch outcome is uncertain");
+                .hasRootCauseInstanceOf(ApiException.class).rootCause().extracting("code").isEqualTo("OPENAI_CONNECTION_FAILED");
         assertState(missing, "UNCERTAIN");
+    }
+
+    @Test
+    void preservesProviderErrorForUiAndKeepsUnknownBillingWithoutRetry() {
+        Fixture fixture = fixture("provider error alias");
+        UUID requestId = UUID.randomUUID();
+        AtomicInteger calls = new AtomicInteger();
+        OpenAiMeetingOrchestrator rejected = orchestrator(payload -> {
+            calls.incrementAndGet();
+            return CompletableFuture.completedFuture(new OpenAiPocClient.Response(
+                    OpenAiPocClient.Status.HTTP_ERROR, null, null, null,
+                    OpenAiPocClient.httpFailure(404, new byte[0])));
+        });
+        assertThatThrownBy(() -> rejected.generateSummary(requestId, fixture.meeting().id()).join())
+                .hasRootCauseInstanceOf(ApiException.class).rootCause().extracting("code")
+                .isEqualTo("OPENAI_MODEL_UNAVAILABLE");
+        assertState(requestId, "UNCERTAIN");
+        assertThat(calls).hasValue(1);
     }
 
     @Test
@@ -180,7 +198,7 @@ class OpenAiMeetingOrchestratorIntegrationTest {
         UUID timedOut = UUID.randomUUID();
         OpenAiMeetingOrchestrator timeout = orchestrator(shortTimeout, payload -> new CompletableFuture<>());
         assertThatThrownBy(() -> timeout.generateSummary(timedOut, timeoutFixture.meeting().id()).join())
-                .hasRootCauseMessage("OpenAI dispatch outcome is uncertain");
+                .hasRootCauseInstanceOf(ApiException.class).rootCause().extracting("code").isEqualTo("OPENAI_TIMEOUT");
         assertState(timedOut, "UNCERTAIN");
 
         resetDatabase();
@@ -377,6 +395,31 @@ class OpenAiMeetingOrchestratorIntegrationTest {
 
     private OpenAiMeetingOrchestrator orchestrator(OpenAiMeetingOrchestrator.Transport transport) {
         return orchestrator(limits, transport);
+    }
+
+    @Test
+    void subscriptionSummaryIgnoresDollarBudgetAndCreatesNoApiReservation() {
+        Fixture fixture = fixture("subscription alias");
+        jdbc.update("UPDATE app_settings SET monthly_budget_usd=0 WHERE id=1");
+        var subscription = new OpenAiMeetingOrchestrator(ledger, summaries, corrections, topics, limits,
+                "subscription", BigDecimal.ONE, 14400,
+                payload -> CompletableFuture.completedFuture(new OpenAiPocClient.Response(
+                        OpenAiPocClient.Status.COMPLETED, null, summaryJson(fixture.segment().id()), null)), true);
+        assertThat(subscription.generateSummary(UUID.randomUUID(), fixture.meeting().id()).join().provider())
+                .isEqualTo("CODEX");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ai_usage_records", Integer.class)).isZero();
+    }
+
+    @Test
+    void subscriptionFailureIsVisibleWithoutApiFallbackOrReservation() {
+        Fixture fixture = fixture("subscription failure alias");
+        var subscription = new OpenAiMeetingOrchestrator(ledger, summaries, corrections, topics, limits,
+                "subscription", BigDecimal.ONE, 14400,
+                payload -> CompletableFuture.failedFuture(CodexBridgeClient.error("CODEX_LIMIT_REACHED")), true);
+        assertThatThrownBy(() -> subscription.generateSummary(UUID.randomUUID(), fixture.meeting().id()).join())
+                .hasRootCauseInstanceOf(ApiException.class).rootCause().extracting("code")
+                .isEqualTo("CODEX_LIMIT_REACHED");
+        assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ai_usage_records", Integer.class)).isZero();
     }
 
     private AiConfiguration paidConfiguration() {

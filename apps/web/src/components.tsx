@@ -36,7 +36,7 @@ function formatTime(ms: number) {
   return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`
 }
 
-export function TranscriptCard({ segment, partial = false, onSave }: { segment: TranscriptSegment; partial?: boolean; onSave?: (text: string, revision: number) => Promise<void> }) {
+export function TranscriptCard({ segment, speakerName, partial = false, onSave }: { segment: TranscriptSegment; speakerName: string; partial?: boolean; onSave?: (text: string, revision: number) => Promise<void> }) {
   const isCorrected = segment.transcriptStatus === 'CORRECTED' && segment.displayText !== segment.originalText
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
@@ -55,7 +55,7 @@ export function TranscriptCard({ segment, partial = false, onSave }: { segment: 
         <p className="font-mono text-xs font-bold text-moss/55">{formatTime(segment.startMs)}</p>
         <div className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-mint px-2.5 py-1 text-xs font-bold text-moss">
           <Circle className="h-2 w-2 fill-current" />
-          {segment.speakerLabel ?? '화자 ?'}
+          {speakerName}
         </div>
         <p className="mt-1.5 text-[11px] font-semibold text-slate-400">{speakerLabels[segment.speakerStatus]}</p>
       </div>

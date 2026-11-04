@@ -9,12 +9,14 @@
 | 상황 | 저장소 루트에서 할 일 |
 |---|---|
 | 최초 비공개 배포·설정 점검 | [Windows 배포 스크립트](../scripts/README.md#windows-private-deployment) 실행 |
-| PC 재시작 후 | Docker·Tailscale 실행 뒤 `docker compose -f compose.yaml -f compose.tailscale.yaml up -d`, `tailscale serve status` 확인 |
-| 코드 변경 반영 | 같은 Compose 명령에 `--build` 추가. 녹음 중에는 실행하지 않음 |
+| PC 재시작 후 | Docker·Tailscale 실행 뒤 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-private.ps1 -EnablePaidAi`, `tailscale serve status` 확인 |
+| 코드 변경 반영 | 같은 시작 스크립트를 실행해 이미지를 갱신. bridge 코드 변경은 기존 bridge 종료 후 재실행. 녹음 중에는 실행하지 않음 |
 | 상태 확인 | `docker compose ps`, 같은 tailnet 기기에서 HTTPS 주소·로그인·녹음 재생 확인 |
 | 종료 | 진행 중 녹음을 종료·업로드 확인한 뒤 같은 Compose 파일 조합으로 `down` |
 
 Compose의 `restart: unless-stopped`는 Docker 엔진이 시작돼야 동작한다. `down -v`는 DB·녹음 볼륨을 삭제하므로 평소 종료에 사용하지 않는다. 기존 `.env`를 덮어쓰거나 새 토큰을 불필요하게 생성하지 않는다. 배포 스크립트는 기본적으로 유료 호출을 끄고, `-EnablePaidAi`를 명시한 실행에서만 서버 프로세스에 키를 전달한다.
+
+Codex 기본 모드에서는 PC의 ChatGPT 로그인이 유지되면 된다. CLI 창은 열어둘 필요 없으며 숨겨진 bridge가 요청마다 실행한다. 로그인 만료는 `codex login`으로 복구한다. 모델 추론은 OpenAI 서버에서 수행되므로 회의 텍스트의 외부 전송은 계속 발생한다. 기본 배포의 `OPENAI_API_KEY`는 비우고 Deepgram 키는 유지한다. `.omx/codex-bridge/token`과 Codex 자격증명은 Git·브라우저·로그에 노출하지 않는다. bridge 포트 8767은 Docker 접근용이며 공개 프록시/Tailscale Serve에 추가하지 않는다.
 
 ## 원칙
 - 회의 녹음 사실과 외부 STT(Deepgram), 교정/요약(OpenAI) 전송 여부를 명확하게 안내. 참석자의 동의와 소속 조직 정책을 확인한다.

@@ -10,13 +10,17 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\portfolio\ai-meeting-
 
 The script checks both services, detects the MagicDNS hostname, creates `.env` with random secrets only when absent, builds/starts Compose, checks that the local API rejects unauthenticated access, and configures private Tailscale Serve. Existing `.env` files and Docker data are retained. The default command forces paid APIs off even if the shell or `.env` enables them; inherited shell settings are restored afterward. First builds download container images and dependencies. If Tailscale asks to enable HTTPS/Serve, complete its displayed link and rerun. Existing Serve configuration may require an interactive confirmation; the script does not pass `--yes` or reset it.
 
-To activate the implemented Deepgram/OpenAI paths, keep both provider keys in the current process or Windows user environment and opt in explicitly:
+To activate Deepgram transcription and Codex subscription summaries, keep `DEEPGRAM_API_KEY` in the current process or Windows user environment, install Node.js/Codex CLI, run `codex login` with ChatGPT, and opt in explicitly:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\portfolio\ai-meeting-codex\scripts\start-private.ps1 -EnablePaidAi
 ```
 
-The script passes the keys only to Compose for this run, never writes or prints them, and restores the caller environment. The app monthly budget defaults to `0 USD`; sign in and save a small positive amount such as `3 USD` before starting LIVE or an OpenAI task. Configured rates and limits are conservative reservations, not a provider billing guarantee.
+The script starts a hidden Windows bridge and uses the existing ChatGPT login to run `codex exec` with `gpt-6.1-sol`. It passes a private bridge token to Docker and clears `OPENAI_API_KEY` for this deployment. Keep this PC and the bridge running; subscription availability and usage limits still apply. A summary sends the selected transcript to OpenAI through Codex; the model does not run locally. The bridge disables tools, uses ephemeral sessions and temporary schema/results, and never falls back to the paid API. It accepts authenticated requests on port 8767 for Docker access; do not publish that port through Tailscale Serve or a public proxy.
+
+Deepgram remains separately billed and subject to the app's dollar budget. Codex summaries/corrections/term candidates do not reserve API dollars; previous API usage records remain visible. The app monthly budget defaults to `0 USD`; save a positive budget before LIVE. To explicitly retain the original paid OpenAI path, supply `OPENAI_API_KEY` and add `-UseOpenAiApi`. The script never prints keys and restores the caller environment.
+
+The Usage page reads account-wide Codex remaining percentages and reset times through the CLI's `account/rateLimits/read` method. Reads are cached for 30 seconds and do not generate a model response. Missing values remain unknown; a read failure never appears as a full allowance. Deepgram budgets and recording retention settings are collapsed below the subscription view.
 
 The printed HTTPS address still needs login/microphone verification from another device on the tailnet. Use `APP_OWNER_TOKEN` from the local `.env` once to register the owner username/password, then sign in with those credentials. Remembered sessions last up to 30 days across API restarts; do not paste credentials into chat. Docker uses its own database/recording volumes; it does not import the development database. If Codex reports access denied on Docker/Tailscale named pipes, run the command outside the restricted agent session. Isolated mock checks:
 

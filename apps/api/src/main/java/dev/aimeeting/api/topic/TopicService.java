@@ -69,6 +69,12 @@ public class TopicService {
 
     @org.springframework.transaction.annotation.Transactional
     public List<GlossaryTerm> storeAiSuggestions(AiSnapshot expected, List<TopicCandidate> candidates) {
+        return storeAiSuggestions(expected, candidates, "OPENAI");
+    }
+
+    @org.springframework.transaction.annotation.Transactional
+    public List<GlossaryTerm> storeAiSuggestions(AiSnapshot expected, List<TopicCandidate> candidates, String provider) {
+        if (!java.util.Set.of("OPENAI", "CODEX").contains(provider)) throw new IllegalArgumentException("Invalid AI provider");
         Topic current = topics.lock(expected.topic().id());
         List<GlossaryTerm> currentTerms = topics.terms(current.id());
         if (!current.equals(expected.topic()) || !currentTerms.equals(expected.existingTerms())) {
@@ -79,7 +85,7 @@ public class TopicService {
         for (TopicCandidate candidate : List.copyOf(candidates)) {
             if (topics.findByNormalizedCanonical(current.id(), normalize(candidate.canonical())) != null) continue;
             stored.add(createTerm(current.id(), candidate.canonical(), candidate.meaning(), candidate.aliases(),
-                    "PENDING", "OPENAI"));
+                    "PENDING", provider));
         }
         return List.copyOf(stored);
     }

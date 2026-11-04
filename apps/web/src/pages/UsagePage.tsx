@@ -5,6 +5,7 @@ import { AppLink } from '../router'
 import { usageApi } from '../usageApi'
 import type { Settings, Usage } from '../usageApi'
 import type { AiConfiguration } from '../types'
+import { CodexUsage } from '../CodexUsage'
 
 const usd = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })
 
@@ -67,11 +68,13 @@ export function UsagePage({ onUnauthorized }: { onUnauthorized: () => void }) {
   }
 
   return <main className="mx-auto max-w-5xl px-5 py-10 md:px-10">
-    <p className="eyebrow">개인 작업 공간</p><h1 className="mt-3 text-3xl font-black">사용량·예산</h1>
-    <p className="mt-4 rounded-2xl bg-mint p-4 text-sm leading-6 text-moss">{aiConfiguration?.enabled ? '유료 AI가 활성화되어 있습니다. LIVE 전사와 AI 요약·교정·용어 후보 요청은 아래 예산과 서버 상한 안에서 비용 원장에 기록됩니다.' : '외부 API 호출이 차단되어 있습니다. 가상 전사·요약과 로컬 녹음의 외부 API 비용은 0 USD입니다.'} 서버·저장 공간 비용은 포함하지 않습니다.</p>
+    <p className="eyebrow">개인 작업 공간</p><h1 className="mt-3 text-3xl font-black">사용량</h1>
+    {aiConfiguration?.llmProvider === 'CODEX' && <CodexUsage onUnauthorized={onUnauthorized} />}
+    <p className="mt-4 rounded-2xl bg-mint p-4 text-sm leading-6 text-moss">{aiConfiguration?.llmProvider === 'CODEX' ? '요약·교정·용어 후보는 Codex 요금제의 사용 한도로 처리하며 아래 달러 예산에서 차감하지 않습니다. LIVE 음성 전사의 Deepgram API 비용에는 아래 예산이 적용됩니다. 이전 OpenAI API 예약 기록은 과거 기록으로 보존됩니다.' : aiConfiguration?.enabled ? '유료 AI가 활성화되어 있습니다. LIVE 전사와 AI 요약·교정·용어 후보 요청은 아래 예산과 서버 상한 안에서 비용 원장에 기록됩니다.' : '외부 API 호출이 차단되어 있습니다. 가상 전사·요약과 로컬 녹음의 외부 API 비용은 0 USD입니다.'} 서버·저장 공간 비용은 포함하지 않습니다.</p>
     {error && <p role="alert" className="mt-4 text-sm text-red-700">{error}</p>}
     {notice && <p role="status" className="mt-4 text-sm text-moss">{notice}</p>}
     <section className="mt-6 rounded-2xl border border-moss/10 bg-white p-6" aria-label="월별 사용량">
+      <h2 className="mb-4 text-xl font-black">전사 비용·이전 API 기록</h2>
       <label className="block text-sm font-bold" htmlFor="usage-month">사용량 월 (UTC)</label>
       <input id="usage-month" type="month" required className="field mt-2 max-w-xs" value={month} onChange={(event) => { if (event.target.value) setMonth(event.target.value) }} />
       {usage ? <>
@@ -95,8 +98,8 @@ export function UsagePage({ onUnauthorized }: { onUnauthorized: () => void }) {
         </div>)}</div>
       </> : <p className="mt-4 text-sm text-slate-500">사용량을 불러오는 중…</p>}
     </section>
-    <section className="mt-6 rounded-2xl border border-moss/10 bg-white p-6" aria-label="예산 및 보관 설정">
-      <h2 className="text-xl font-black">예산·보관 설정</h2>
+    <details className="mt-6 rounded-2xl border border-moss/10 bg-white p-6" aria-label="예산 및 보관 설정">
+      <summary className="cursor-pointer text-lg font-bold">전사 API 예산·녹음 보관 설정</summary>
       <form className="mt-5 grid gap-4 sm:grid-cols-2" onSubmit={(event) => void save(event)}>
         <label className="text-sm font-bold">월 예산 (USD)<input type="number" className="field mt-2" required min="0" max="10000" step="0.01" disabled={!settings || busy} value={budget} onChange={(event) => setBudget(event.target.value)} /></label>
         <label className="text-sm font-bold">회의당 최대 예산 (USD)<input type="number" className="field mt-2" required min="0.01" max="10000" step="0.01" disabled={!settings || busy} value={meetingBudget} onChange={(event) => setMeetingBudget(event.target.value)} /></label>
@@ -106,6 +109,6 @@ export function UsagePage({ onUnauthorized }: { onUnauthorized: () => void }) {
         <p className="text-xs leading-5 text-slate-500 sm:col-span-2">보관 주기가 비어 있으면 제한을 두지 않습니다. 설정을 저장해도 녹음을 자동 삭제하지 않습니다. 유료 작업 시간·예산 제한은 새 외부 API 요청에 적용하며, 현재 진행 중인 로컬 녹음은 중단하지 않습니다.</p>
         <button className="button-primary justify-self-start" disabled={!settings || busy}>설정 저장</button>
       </form>
-    </section>
+    </details>
   </main>
 }

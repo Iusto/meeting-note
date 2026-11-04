@@ -64,6 +64,12 @@ public class SummaryService {
 
     @Transactional
     public MeetingSummary storeAiGenerated(AiSnapshot expected, SummaryProvider.Summary content) {
+        return storeAiGenerated(expected, content, "OPENAI");
+    }
+
+    @Transactional
+    public MeetingSummary storeAiGenerated(AiSnapshot expected, SummaryProvider.Summary content, String provider) {
+        if (!java.util.Set.of("OPENAI", "CODEX").contains(provider)) throw new IllegalArgumentException("Invalid AI provider");
         summaries.lockMeeting(expected.meetingId());
         Meeting meeting = meetings.find(expected.meetingId());
         requireStoppedMeeting(meeting);
@@ -76,7 +82,7 @@ public class SummaryService {
         }
         validateEvidence(content, current);
         StoredSummary stored = summaries.insert(expected.meetingId(), summaries.nextVersion(expected.meetingId()),
-                "OPENAI", content, currentSnapshot);
+                provider, content, currentSnapshot);
         return view(stored, currentSnapshot);
     }
 

@@ -41,18 +41,19 @@ public class MeetingAiApplicationService {
         this.orchestrator = () -> {
         OpenAiPocLimits limits = new OpenAiPocLimits(Duration.ofSeconds(configuration.timeoutSeconds()),
                 MAX_INPUT_TOKENS, configuration.outputTokenCap(), configuration.openAiInputRate(),
-                configuration.openAiOutputRate(), configuration.maximumMeetingUsd());
+                configuration.openAiOutputRate(), configuration.codexEnabled() ? new java.math.BigDecimal("100.00") : configuration.maximumMeetingUsd());
         OpenAiMeetingOrchestrator.Transport transport = testTransport == null
-                ? payload -> OpenAiPocClient.request(configuration.enabled(), configuration.openAiApiKey(),
-                        payload, limits)
+                ? payload -> configuration.codexEnabled()
+                    ? CodexBridgeClient.request(configuration.codexBridgeUrl(), configuration.codexBridgeToken(), payload)
+                    : OpenAiPocClient.request(configuration.enabled(), configuration.openAiApiKey(), payload, limits)
                 : testTransport;
         return new OpenAiMeetingOrchestrator(ledger, summaries, corrections, topics, limits,
                 configuration.priceVersion(), configuration.maximumMeetingUsd(),
-                configuration.maximumAudioSeconds(), transport);
+                configuration.maximumAudioSeconds(), transport, configuration.codexEnabled());
         };
     }
 
-    public boolean enabled() { return configuration.enabled(); }
+    public boolean enabled() { return configuration.enabled() || configuration.codexEnabled(); }
 
     public CompletableFuture<MeetingSummary> generateSummary(UUID meetingId) {
         return bounded(() -> orchestrator.get().generateSummary(UUID.randomUUID(), meetingId));
@@ -67,7 +68,7 @@ public class MeetingAiApplicationService {
     }
 
     private <T> CompletableFuture<T> bounded(Supplier<CompletableFuture<T>> operation) {
-        if (!configuration.enabled()) {
+        if (!enabled()) {
             return CompletableFuture.failedFuture(new ApiException(HttpStatus.CONFLICT, "PAID_API_DISABLED",
                     "Paid AI mode is disabled"));
         }

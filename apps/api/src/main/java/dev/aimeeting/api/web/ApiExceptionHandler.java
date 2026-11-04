@@ -13,8 +13,10 @@ import org.springframework.web.bind.ServletRequestBindingException;
 
 @RestControllerAdvice
 public class ApiExceptionHandler {
+    private static final org.slf4j.Logger log = org.slf4j.LoggerFactory.getLogger(ApiExceptionHandler.class);
     @ExceptionHandler(ApiException.class)
     ResponseEntity<ApiError> api(ApiException exception, HttpServletRequest request) {
+        log.warn("API request failed: code={}, requestId={}", exception.code(), request.getAttribute("requestId"));
         return ResponseEntity.status(exception.status()).body(error(exception.code(), exception.getMessage(), request));
     }
 
@@ -37,6 +39,13 @@ public class ApiExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     ResponseEntity<ApiError> unexpected(Exception exception, HttpServletRequest request) {
+        Throwable cause = exception;
+        while ((cause instanceof java.util.concurrent.CompletionException
+                || cause instanceof java.util.concurrent.ExecutionException) && cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        if (cause instanceof ApiException known) return api(known, request);
+        log.error("API request failed: type={}, requestId={}", cause.getClass().getSimpleName(), request.getAttribute("requestId"));
         return ResponseEntity.internalServerError()
                 .body(error("INTERNAL_ERROR", "The request could not be completed", request));
     }

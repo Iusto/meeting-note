@@ -3,6 +3,7 @@ import { AlertTriangle, ArrowLeft, CircleStop, LoaderCircle, Radio, RefreshCw, W
 import { ApiError, api, liveSocketUrl } from '../api'
 import { LivePcmTransport, MicrophonePcmCapture } from '../liveAudio'
 import { MockNotice, TranscriptCard } from '../components'
+import { createSpeakerLabels } from '../speakerLabels'
 import { liveReducer, initialLiveState } from '../liveReducer'
 import { AppLink } from '../router'
 import type { AiConfiguration, LiveEvent, Meeting } from '../types'
@@ -33,6 +34,13 @@ export function LivePage({ meetingId, onUnauthorized }: { meetingId: string; onU
   const retryRef = useRef<number | undefined>(undefined)
   const intentionallyClosedRef = useRef(false)
   const meetingStartedAtRef = useRef<string | null>()
+  const transcriptRef = useRef<HTMLDivElement>(null)
+  const followTranscriptRef = useRef(true)
+
+  useEffect(() => {
+    const panel = transcriptRef.current
+    if (panel && followTranscriptRef.current) panel.scrollTop = panel.scrollHeight
+  }, [state.segments, state.partials])
 
   const loadTranscript = useCallback(async () => {
     const segments = await api.getTranscript(meetingId)
@@ -190,6 +198,7 @@ export function LivePage({ meetingId, onUnauthorized }: { meetingId: string; onU
 
   const [connectionLabel, connectionClass] = connectionCopy[state.connection]
   const partials = Object.values(state.partials).sort((a, b) => a.startMs - b.startMs)
+  const speakerName = createSpeakerLabels([...state.segments, ...partials])
   const isLive = meeting.status === 'STARTED'
   const localRecording = meeting.inputSource === 'LOCAL_RECORDING'
   const liveAi = meeting.inputSource === 'LIVE'
@@ -205,7 +214,11 @@ export function LivePage({ meetingId, onUnauthorized }: { meetingId: string; onU
         </span>
       </div>
 
-      <section className="mt-7 grid gap-6 lg:grid-cols-[1fr_19rem]">
+      <nav aria-label="회의 도구 바로가기" className="sticky top-2 z-20 mt-5 flex gap-2 rounded-2xl border border-moss/10 bg-white/95 p-2 shadow-sm backdrop-blur lg:hidden">
+        <a href="#meeting-transcript" className="button-secondary flex-1 justify-center">회의록</a>
+        <a href="#meeting-summary" className="button-primary flex-1 justify-center">AI 요약과 검토</a>
+      </nav>
+      <section className="mt-7 grid gap-6 lg:grid-cols-[minmax(0,1fr)_24rem]">
         <div>
           <div className="rounded-[2rem] bg-moss p-7 text-white shadow-soft md:p-9">
             <div className="flex flex-wrap items-start justify-between gap-5">
@@ -223,21 +236,30 @@ export function LivePage({ meetingId, onUnauthorized }: { meetingId: string; onU
           </div>}
           {microphoneMode && <RecordingPanel meetingId={meetingId} isLive={isLive} aiEnabled={liveAi} aiConnection={state.connection} onStreamStarted={liveAi ? startLiveAi : undefined} onStreamStopping={liveAi ? stopLiveAi : undefined} onFinished={stop} />}
 
-          <div className="mt-7 space-y-3" aria-live="polite" aria-label="실시간 회의록">
-            {state.segments.map((segment) => <TranscriptCard key={segment.segmentId} segment={segment} onSave={async (text, revision) => { await api.correctSegment(meetingId, { ...segment, revision }, text); await loadTranscript() }} />)}
-            {partials.map((segment) => <TranscriptCard key={`partial-${segment.eventId}`} segment={segment} partial />)}
+          <div className="mt-7 flex items-center justify-between gap-3">
+            <h2 className="text-lg font-black">회의록 <span className="text-sm font-semibold text-slate-500">확정 발언 {state.segments.length}개</span></h2>
+            <button className="text-sm font-bold text-moss underline" onClick={() => { const panel = transcriptRef.current; if (panel) { panel.scrollTop = panel.scrollHeight; followTranscriptRef.current = true } }}>최근 발언 보기</button>
+          </div>
+          <div id="meeting-transcript" ref={transcriptRef} onScroll={(event) => { const panel = event.currentTarget; followTranscriptRef.current = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 80 }} tabIndex={0} className="mt-3 max-h-[70vh] scroll-mt-24 space-y-3 overflow-y-auto rounded-2xl p-1 pr-3 focus-visible:outline-moss" aria-live="polite" aria-label="실시간 회의록">
+            {state.segments.map((segment) => <TranscriptCard key={segment.segmentId} segment={segment} speakerName={speakerName(segment.speakerLabel)} onSave={async (text, revision) => { await api.correctSegment(meetingId, { ...segment, revision }, text); await loadTranscript() }} />)}
+            {partials.map((segment) => <TranscriptCard key={`partial-${segment.eventId}`} segment={segment} speakerName={speakerName(segment.speakerLabel)} partial />)}
             {!localRecording && state.segments.length === 0 && partials.length === 0 && (
               <div className="rounded-[2rem] border border-dashed border-moss/20 bg-white/45 py-16 text-center"><Radio className="mx-auto h-9 w-9 animate-pulse text-moss/30" /><p className="mt-4 font-black">{liveAi ? '마이크를 시작하면 실시간 자막이 표시됩니다' : '첫 가상 발언을 기다리고 있어요'}</p><p className="mt-1 text-sm text-slate-500">연결되면 임시 자막부터 차례로 표시됩니다.</p></div>
             )}
           </div>
-          <SummaryPanel meetingId={meetingId} stopped={!isLive && meeting.status !== 'CREATED'} transcriptKey={state.segments.map((segment) => `${segment.segmentId}:${segment.revision}`).join('|')} hasTopic={Boolean(meeting.topicId)} aiConfiguration={aiConfiguration} onChanged={loadTranscript} />
         </div>
 
-        <aside className="space-y-4 lg:sticky lg:top-6 lg:self-start">
+        <aside id="meeting-summary" className="scroll-mt-24 space-y-4 lg:sticky lg:top-6 lg:max-h-[calc(100dvh-3rem)] lg:self-start lg:overflow-y-auto lg:pr-2" aria-label="회의 도구">
+          <SummaryPanel meetingId={meetingId} stopped={!isLive && meeting.status !== 'CREATED'} transcriptKey={state.segments.map((segment) => `${segment.segmentId}:${segment.revision}`).join('|')} hasTopic={Boolean(meeting.topicId)} aiConfiguration={aiConfiguration} onChanged={loadTranscript} />
+          <details className="rounded-2xl border border-moss/10 bg-white/70 p-4">
+            <summary className="cursor-pointer text-sm font-bold text-moss">회의 상태와 이용 안내</summary>
+            <div className="mt-4 space-y-4">
           {!microphoneMode && <MockNotice />}
           {liveAi && <div className="rounded-2xl border border-coral/30 bg-red-50 p-4 text-sm leading-6 text-red-900"><strong>유료 AI 사용</strong><br />마이크 시작 후 음성이 외부 STT로 전송됩니다. 최대 {Math.round((aiConfiguration?.maximumAudioSeconds ?? 0) / 60)}분 · 회의당 최대 ${aiConfiguration?.maximumMeetingUsd?.toFixed(2) ?? '0.00'}로 서버에서 제한합니다.</div>}
           <p className="rounded-2xl border border-moss/10 bg-white/70 p-4 text-xs font-semibold leading-5 text-slate-500">{localRecording ? '외부 AI 전송과 과금은 없습니다. 페이지를 닫으면 마이크가 중지됩니다. 브라우저에 저장된 청크는 이 회의 화면에서 복구하세요.' : liveAi ? '실시간 전사가 끊겨도 원본 녹음은 계속됩니다. 누락 구간은 화면에 시간 범위로 표시되며 이미 전송한 음성을 재전송하지 않습니다.' : '이 데모에서는 라이브 화면을 벗어나면 가상 재생이 끝납니다. 이미 확정되어 저장된 발언은 유지됩니다.'}</p>
           <div className="rounded-2xl border border-white bg-white p-5 shadow-sm"><p className="eyebrow">상태 읽는 법</p><dl className="mt-4 space-y-4 text-sm"><div><dt className="font-black text-ink">전사 상태</dt><dd className="mt-1 leading-5 text-slate-500">임시·확정·교정 여부를 표시합니다.</dd></div><div><dt className="font-black text-ink">화자 상태</dt><dd className="mt-1 leading-5 text-slate-500">전사와 별도로 늦게 갱신될 수 있습니다.</dd></div><div><dt className="font-black text-ink">원문</dt><dd className="mt-1 leading-5 text-slate-500">교정되어도 최초 확정 문장을 보존합니다.</dd></div></dl></div>
+            </div>
+          </details>
         </aside>
       </section>
     </main>
