@@ -17,6 +17,20 @@ import java.util.UUID;
 import org.junit.jupiter.api.Test;
 
 class MeetingAiPayloadsTest {
+    @Test
+    void topicDiscussionsRequireKnownEvidenceAndOldStoredSummariesRemainReadable() throws Exception {
+        String old = "{\"summary\":\"Outcome\",\"sourceSegmentIds\":[\"%s\"],\"decisions\":[],\"actionItems\":[],\"unresolved\":[]}".formatted(FIRST);
+        assertThat(JSON.readValue(old, SummaryProvider.Summary.class).discussions()).isEmpty();
+        var root = (com.fasterxml.jackson.databind.node.ObjectNode) JSON.readTree(old);
+        root.putArray("discussions").addObject().put("text", "Payroll: verify migration")
+                .putArray("sourceSegmentIds").add(FIRST.toString());
+        var transcript = List.of(segment(FIRST, "Verify migration", 0, false));
+        assertThat(MeetingAiPayloads.parseSummary(root.toString(), transcript).discussions()).hasSize(1);
+        ((com.fasterxml.jackson.databind.node.ObjectNode) root.withArray("discussions").get(0))
+                .putArray("sourceSegmentIds").add(SECOND.toString());
+        assertThatThrownBy(() -> MeetingAiPayloads.parseSummary(root.toString(), transcript))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final UUID FIRST = UUID.fromString("00000000-0000-0000-0000-000000000001");
     private static final UUID SECOND = UUID.fromString("00000000-0000-0000-0000-000000000002");

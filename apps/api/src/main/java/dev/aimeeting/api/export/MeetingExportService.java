@@ -88,7 +88,8 @@ public class MeetingExportService {
                 .append("- Stale: ").append(summary.stale()).append("\n\n")
                 .append(escape(content.summary())).append("\n\n")
                 .append("Source segments: ").append(content.sourceSegmentIds()).append("\n\n");
-        appendEvidence(output, "Decisions", content.decisions());
+        appendEvidence(output, "Discussion by topic", content.discussions());
+        appendEvidence(output, "Confirmed decisions", content.decisions());
         output.append("### Action items\n\n");
         for (SummaryProvider.ActionItem item : content.actionItems()) {
             output.append("- ").append(escape(item.text())).append(" (sources: ")

@@ -42,6 +42,10 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getSpeakerNames: (id: string) => request<{ label: string; displayName: string | null }[]>(`/meetings/${id}/speakers`),
+  renameSpeaker: (id: string, label: string, displayName: string, expectedName: string) => request<{ label: string; displayName: string | null }>(`/meetings/${id}/speakers`, {
+    method: 'PUT', body: JSON.stringify({ label, displayName, expectedName }),
+  }),
   getLoginConfiguration: () => request<{ setupRequired: boolean }>('/session/configuration'),
   setupOwner: (credentials: { token: string; username: string; password: string; rememberMe: boolean }) =>
     request<void>('/session/setup', { method: 'POST', body: JSON.stringify(credentials) }),

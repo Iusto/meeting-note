@@ -8,7 +8,15 @@ import java.util.UUID;
 public interface SummaryProvider {
     Summary summarize(UUID meetingId, List<TranscriptSegment> transcript);
     record Summary(String summary, List<UUID> sourceSegmentIds, List<Evidence> decisions,
-                   List<ActionItem> actionItems, List<Evidence> unresolved) {}
+                   List<ActionItem> actionItems, List<Evidence> unresolved, List<Evidence> discussions) {
+        public Summary {
+            discussions = discussions == null ? List.of() : List.copyOf(discussions);
+        }
+        public Summary(String summary, List<UUID> sourceSegmentIds, List<Evidence> decisions,
+                       List<ActionItem> actionItems, List<Evidence> unresolved) {
+            this(summary, sourceSegmentIds, decisions, actionItems, unresolved, List.of());
+        }
+    }
     record Evidence(String text, List<UUID> sourceSegmentIds) {}
     @JsonInclude(JsonInclude.Include.ALWAYS)
     record ActionItem(String text, String assignee, String dueDate, List<UUID> sourceSegmentIds) {}

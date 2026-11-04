@@ -24,6 +24,32 @@ public class MeetingRepository {
 
     public MeetingRepository(JdbcTemplate jdbc) { this.jdbc = jdbc; }
 
+    public record SpeakerName(String label, String displayName) {}
+
+    public List<SpeakerName> speakerNames(UUID meetingId) {
+        find(meetingId);
+        return jdbc.query("SELECT provider_label,display_name FROM speakers WHERE meeting_id=? AND display_name IS NOT NULL ORDER BY provider_label",
+                (rs, n) -> new SpeakerName(rs.getString(1), rs.getString(2)), meetingId);
+    }
+
+    @Transactional
+    public SpeakerName renameSpeaker(UUID meetingId, String label, String displayName, String expectedName) {
+        find(meetingId);
+        String name = displayName.strip();
+        if (name.codePoints().anyMatch(Character::isISOControl) || label.isBlank()
+                || label.codePoints().anyMatch(Character::isISOControl)) {
+            throw new ApiException(HttpStatus.BAD_REQUEST, "INVALID_SPEAKER_NAME", "화자 이름과 식별자를 확인하세요.");
+        }
+        jdbc.update("INSERT INTO speakers(id,meeting_id,provider_label,review_state) VALUES (?,?,?,?) ON CONFLICT DO NOTHING",
+                UUID.randomUUID(), meetingId, label, "TENTATIVE");
+        UUID speakerId = jdbc.queryForObject("SELECT id FROM speakers WHERE meeting_id=? AND provider_label=?",
+                UUID.class, meetingId, label);
+        int changed = jdbc.update("UPDATE speakers SET display_name=? WHERE id=? AND COALESCE(display_name,'')=?",
+                name.isEmpty() ? null : name, speakerId, expectedName);
+        if (changed != 1) throw new ApiException(HttpStatus.CONFLICT, "SPEAKER_NAME_CHANGED", "다른 화면에서 화자 이름을 변경했습니다. 새로고침 후 다시 저장하세요.");
+        return new SpeakerName(label, name.isEmpty() ? null : name);
+    }
+
     public List<Meeting> list() {
         return jdbc.query("SELECT id,title,status,input_source,topic_id,started_at,ended_at,revision FROM meetings ORDER BY created_at DESC", this::meeting);
     }

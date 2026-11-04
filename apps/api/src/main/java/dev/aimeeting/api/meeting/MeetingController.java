@@ -44,6 +44,18 @@ public class MeetingController {
     }
     @GetMapping("/{id}/transcript") public List<TranscriptSegment> transcript(@PathVariable UUID id) { return meetings.transcript(id); }
 
+    @GetMapping("/{id}/speakers") public List<MeetingRepository.SpeakerName> speakers(@PathVariable UUID id) {
+        return meetings.speakerNames(id);
+    }
+
+    @PutMapping("/{id}/speakers") public MeetingRepository.SpeakerName renameSpeaker(@PathVariable UUID id,
+            @Valid @RequestBody RenameSpeaker request) {
+        return meetings.renameSpeaker(id, request.label(), request.displayName(), request.expectedName());
+    }
+
+    public record RenameSpeaker(@NotBlank @Size(max = 100) String label,
+            @NotNull @Size(max = 200) String displayName, @NotNull @Size(max = 200) String expectedName) {}
+
     @PatchMapping("/{meetingId}/segments/{segmentId}")
     public TranscriptSegment correct(@PathVariable UUID meetingId, @PathVariable UUID segmentId,
                                      @Valid @RequestBody CorrectSegment request) {

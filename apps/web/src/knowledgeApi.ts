@@ -10,7 +10,7 @@ export interface Evidence { text: string; sourceSegmentIds: string[] }
 export interface MeetingSummary {
   id: string; meetingId: string; version: number; provider: 'MOCK' | 'OPENAI' | 'CODEX'; stale: boolean
   content: {
-    summary: string; sourceSegmentIds: string[]; decisions: Evidence[]
+    summary: string; sourceSegmentIds: string[]; discussions?: Evidence[]; decisions: Evidence[]
     actionItems: (Evidence & { assignee: string | null; dueDate: string | null })[]
     unresolved: { text: string; sourceSegmentIds: string[] }[]
   }

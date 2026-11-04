@@ -105,6 +105,9 @@ public class SummaryService {
         content.decisions().forEach(item -> {
             if (item.sourceSegmentIds().isEmpty() || !segmentIds.containsAll(item.sourceSegmentIds())) invalidEvidence();
         });
+        content.discussions().forEach(item -> {
+            if (item.sourceSegmentIds().isEmpty() || !segmentIds.containsAll(item.sourceSegmentIds())) invalidEvidence();
+        });
         content.actionItems().forEach(item -> {
             if (item.sourceSegmentIds().isEmpty() || !segmentIds.containsAll(item.sourceSegmentIds())) invalidEvidence();
         });

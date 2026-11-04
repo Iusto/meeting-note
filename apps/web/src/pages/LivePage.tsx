@@ -10,6 +10,7 @@ import type { AiConfiguration, LiveEvent, Meeting } from '../types'
 import { RecordingPanel } from '../RecordingPanel'
 import { SummaryPanel } from '../SummaryPanel'
 import { MeetingTools } from '../MeetingTools'
+import { SpeakerNames } from '../SpeakerNames'
 
 const connectionCopy = {
   idle: ['대기 중', 'bg-slate-100 text-slate-600'],
@@ -28,6 +29,14 @@ export function LivePage({ meetingId, onUnauthorized }: { meetingId: string; onU
   const [audioGaps, setAudioGaps] = useState<{ startMs: number; endMs: number }[]>([])
   const [stopping, setStopping] = useState(false)
   const [aiConfiguration, setAiConfiguration] = useState<AiConfiguration>()
+  const [speakerNames, setSpeakerNames] = useState<Record<string, string>>({})
+  useEffect(() => {
+    let active = true
+    api.getSpeakerNames(meetingId).then(values => {
+      if (active) setSpeakerNames(Object.fromEntries(values.filter(item => item.displayName).map(item => [item.label, item.displayName!])))
+    }).catch(caught => { if (active) setError(caught instanceof Error ? caught.message : '화자 이름을 불러오지 못했습니다.') })
+    return () => { active = false }
+  }, [meetingId])
   const socketRef = useRef<WebSocket | null>(null)
   const liveTransportRef = useRef<LivePcmTransport>()
   const pcmCaptureRef = useRef<MicrophonePcmCapture>()
@@ -198,7 +207,10 @@ export function LivePage({ meetingId, onUnauthorized }: { meetingId: string; onU
 
   const [connectionLabel, connectionClass] = connectionCopy[state.connection]
   const partials = Object.values(state.partials).sort((a, b) => a.startMs - b.startMs)
-  const speakerName = createSpeakerLabels([...state.segments, ...partials])
+  const allSegments = [...state.segments, ...partials]
+  const defaultSpeakerName = createSpeakerLabels(allSegments)
+  const speakerName = (label?: string | null) => label && speakerNames[label] || defaultSpeakerName(label)
+  const speakerLabels = [...new Set(allSegments.map(segment => segment.speakerLabel).filter((label): label is string => Boolean(label)))]
   const isLive = meeting.status === 'STARTED'
   const localRecording = meeting.inputSource === 'LOCAL_RECORDING'
   const liveAi = meeting.inputSource === 'LIVE'
@@ -250,7 +262,11 @@ export function LivePage({ meetingId, onUnauthorized }: { meetingId: string; onU
         </div>
 
         <aside id="meeting-summary" className="scroll-mt-24 space-y-4 lg:sticky lg:top-6 lg:max-h-[calc(100dvh-3rem)] lg:self-start lg:overflow-y-auto lg:pr-2" aria-label="회의 도구">
-          <SummaryPanel meetingId={meetingId} stopped={!isLive && meeting.status !== 'CREATED'} transcriptKey={state.segments.map((segment) => `${segment.segmentId}:${segment.revision}`).join('|')} hasTopic={Boolean(meeting.topicId)} aiConfiguration={aiConfiguration} onChanged={loadTranscript} />
+          <SpeakerNames labels={speakerLabels} names={speakerNames} fallback={defaultSpeakerName} save={async (label, name, expected) => {
+            const saved = await api.renameSpeaker(meetingId, label, name, expected)
+            setSpeakerNames(current => ({ ...current, [label]: saved.displayName ?? '' }))
+          }} />
+          <SummaryPanel segments={state.segments} speakerName={speakerName} meetingId={meetingId} stopped={!isLive && meeting.status !== 'CREATED'} transcriptKey={state.segments.map((segment) => `${segment.segmentId}:${segment.revision}`).join('|')} hasTopic={Boolean(meeting.topicId)} aiConfiguration={aiConfiguration} onChanged={loadTranscript} />
           <details className="rounded-2xl border border-moss/10 bg-white/70 p-4">
             <summary className="cursor-pointer text-sm font-bold text-moss">회의 상태와 이용 안내</summary>
             <div className="mt-4 space-y-4">

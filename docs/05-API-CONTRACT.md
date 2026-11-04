@@ -120,3 +120,6 @@
 `GET/PATCH /api/v1/settings`에 `perMeetingBudgetUsd`(0.01~10000, 소수 2자리)를 추가한다. PATCH에서 생략하면 기존 값을 보존한다. `GET /api/v1/ai/configuration.maximumMeetingUsd`는 DB의 최신 회의당 예산을 반환한다. V11은 기존 설정에 초기값 3.00을 추가하고 기존 월 예산을 보존한다.
 
 WebSocket `stream.error`에 안전한 사용자 안내용 `message`를 추가한다. 공급자 응답·비밀키·원문 예외는 노출하지 않는다. `101`은 웹앱과 서버 사이 업그레이드 성공이며 공급자 연결 성공은 `session.ready`로 구분한다. 수동 재연결은 기존 녹음을 유지한 새 WebSocket이며 `audioOffsetMs`는 현재 회의 시각부터 시작한다.
+### 화자 표시 이름
+
+`GET /api/v1/meetings/{id}/speakers`: 이름이 지정된 화자의 `{label, displayName}` 목록. `PUT`은 `{label, displayName, expectedName}`을 받아 저장한다. 최초 지정의 `expectedName`은 빈 문자열이다. `displayName`을 비우면 기본 표시로 복원한다. 이름 최대 200자, 공급자 식별자 최대 100자. 기존 이름 불일치는 409 `SPEAKER_NAME_CHANGED`. 인증된 소유자만 접근하며 전사 원문·revision은 변경하지 않는다.

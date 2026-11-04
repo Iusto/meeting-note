@@ -1,14 +1,17 @@
-import { useEffect, useState } from 'react'
+import { createContext, useContext, useEffect, useState } from 'react'
 import { ApiError } from './api'
 import { knowledgeApi } from './knowledgeApi'
 import type { CorrectionSuggestion, MeetingSummary } from './knowledgeApi'
-import type { AiConfiguration } from './types'
+import type { AiConfiguration, TranscriptSegment } from './types'
+
+const EvidenceContext = createContext<Record<string, { time: string; speaker: string; text: string }>>({})
 
 function Sources({ ids }: { ids: string[] }) {
-  return <div className="mt-2 flex flex-wrap gap-2">{ids.map((id, index) => <a key={id} className="text-xs font-bold text-moss underline" href={`#segment-${id}`}>근거 발언 {index + 1}</a>)}</div>
+  const evidence = useContext(EvidenceContext)
+  return <details className="mt-2 text-xs text-slate-500"><summary className="cursor-pointer font-bold text-moss">근거 발언 {ids.length}개 보기</summary><ul className="mt-2 space-y-2">{ids.map(id => <li key={id}><a className="font-bold text-moss underline" href={`#segment-${id}`}>{evidence[id] ? `${evidence[id].time} · ${evidence[id].speaker}` : '원문 발언 보기'}</a>{evidence[id] && <p className="mt-1 leading-5">{evidence[id].text}</p>}</li>)}</ul></details>
 }
 
-export function SummaryPanel({ meetingId, stopped, transcriptKey, hasTopic, aiConfiguration, onChanged }: { meetingId: string; stopped: boolean; transcriptKey: string; hasTopic: boolean; aiConfiguration?: AiConfiguration; onChanged: () => Promise<void> }) {
+export function SummaryPanel({ meetingId, stopped, transcriptKey, hasTopic, aiConfiguration, onChanged, segments = [], speakerName }: { meetingId: string; stopped: boolean; transcriptKey: string; hasTopic: boolean; aiConfiguration?: AiConfiguration; onChanged: () => Promise<void>; segments?: TranscriptSegment[]; speakerName?: (label?: string | null) => string }) {
   const [summary, setSummary] = useState<MeetingSummary>()
   const [suggestions, setSuggestions] = useState<CorrectionSuggestion[]>([])
   const [busy, setBusy] = useState(false)
@@ -32,7 +35,11 @@ export function SummaryPanel({ meetingId, stopped, transcriptKey, hasTopic, aiCo
     finally { setBusy(false) }
   }
 
-  return <section className="space-y-4 rounded-3xl border border-moss/10 bg-white p-6" aria-label="요약과 검토">
+  const evidence = Object.fromEntries(segments.map(segment => [segment.segmentId, {
+    time: `${Math.floor(segment.startMs / 60000)}:${String(Math.floor(segment.startMs / 1000) % 60).padStart(2, '0')}`,
+    speaker: speakerName?.(segment.speakerLabel) ?? segment.speakerLabel ?? '화자 미정', text: segment.displayText,
+  }]))
+  return <EvidenceContext.Provider value={evidence}><section className="space-y-4 rounded-3xl border border-moss/10 bg-white p-6" aria-label="요약과 검토">
     <h2 className="text-xl font-black">요약과 검토</h2>
     <p className="text-sm leading-6 text-slate-500">{codex ? '요약·교정은 서버 PC의 Codex 요금제로 처리합니다. 별도 OpenAI API 요금은 없으며 Codex 사용 한도를 소비합니다. PC와 Codex 로그인이 유지되어야 합니다.' : paidLlm ? '요약과 교정 버튼을 누르면 유료 AI 요청이 발생할 수 있습니다. 자동으로 제출하지 않으며, 결과는 항상 원문 근거와 함께 검토하세요.' : '현재 요약은 확정 발언을 인용하는 가상 결과입니다. 실제 AI의 요약·교정 품질을 나타내지 않습니다.'} 원문 근거 없이 결정·담당자·기한을 만들지 않습니다.</p>
     {busy && <p role="status" className="text-sm font-bold text-moss">{codex ? 'Codex가 처리 중입니다. 긴 회의는 몇 분 걸릴 수 있습니다.' : 'AI가 처리 중입니다.'}</p>}
@@ -45,11 +52,14 @@ export function SummaryPanel({ meetingId, stopped, transcriptKey, hasTopic, aiCo
     {summary && <section className="rounded-2xl bg-cream p-5" aria-label="저장된 요약">
       <p className="text-xs font-black text-moss">{summary.provider} · 요약 버전 {summary.version}</p>
       {summary.stale && <p role="status" className="mt-3 font-bold text-amber-800">발언이 수정되어 요약 갱신이 필요합니다.</p>}
+      <h3 className="mt-5 text-sm font-black">핵심 요약</h3>
       <p className="mt-3 whitespace-pre-wrap text-sm leading-7">{summary.content.summary}</p>
       <Sources ids={summary.content.sourceSegmentIds} />
-      <h3 className="mt-5 text-sm font-black">결정사항</h3>
+      <h3 className="mt-5 text-sm font-black">주제별 논의</h3>
+      {summary.content.discussions?.length ? summary.content.discussions.map((item, index) => <div key={index} className="mt-3 whitespace-pre-wrap text-sm leading-6">{item.text}<Sources ids={item.sourceSegmentIds} /></div>) : <p className="mt-1 text-sm text-slate-500">{summary.content.discussions === undefined ? '이전 형식의 요약입니다. 다시 생성하면 주제별 논의가 포함됩니다.' : '확인된 주제별 논의 없음'}</p>}
+      <h3 className="mt-5 text-sm font-black">확정 결정</h3>
       {summary.content.decisions.length ? summary.content.decisions.map((item, index) => <div key={index} className="mt-2 text-sm">{item.text}<Sources ids={item.sourceSegmentIds} /></div>) : <p className="mt-1 text-sm text-slate-500">확인된 결정사항 없음</p>}
-      <h3 className="mt-5 text-sm font-black">액션아이템</h3>
+      <h3 className="mt-5 text-sm font-black">할 일</h3>
       {summary.content.actionItems.length ? summary.content.actionItems.map((item, index) => <div key={index} className="mt-2 text-sm">{item.text}<p className="text-xs text-slate-500">담당자: {item.assignee ?? '미상'} · 기한: {item.dueDate ?? '미상'}</p><Sources ids={item.sourceSegmentIds} /></div>) : <p className="mt-1 text-sm text-slate-500">확인된 후속 업무 없음</p>}
       <h3 className="mt-5 text-sm font-black">확인할 사항</h3>
       {summary.content.unresolved.length ? summary.content.unresolved.map((item, index) => <div key={index} className="mt-2 text-sm">{item.text}<Sources ids={item.sourceSegmentIds} /></div>) : <p className="mt-1 text-sm text-slate-500">추가 확인 사항 없음</p>}
@@ -63,5 +73,5 @@ export function SummaryPanel({ meetingId, stopped, transcriptKey, hasTopic, aiCo
       </div>}
     </article>)}
     {suggestions.length === 0 && <p className="text-xs text-slate-500">안전하게 제안할 수 있는 교정이 없으면 원문을 유지합니다. 숫자와 식별번호, 모호한 로또 표현은 자동으로 바꾸지 않습니다.</p>}
-  </section>
+  </section></EvidenceContext.Provider>
 }

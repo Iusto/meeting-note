@@ -54,4 +54,20 @@ class MeetingRepositoryTest {
         assertThat(replayed.originalText()).isEqualTo("persisted");
         assertThat(meetings.transcript(meeting.id())).hasSize(1);
     }
+    @Test
+    void speakerNamesSurviveNewFinalsAndRemainIsolatedWithoutChangingOriginals() {
+        Meeting meeting = meetings.create("Live speaker names");
+        Meeting other = meetings.create("Other meeting");
+        meetings.renameSpeaker(meeting.id(), "speaker_0", "Alice", "");
+        TranscriptSegment segment = meetings.insertFinal(meeting.id(), "named-final", 1, 0, 10, "original", "speaker_0");
+        assertThat(meetings.speakerNames(meeting.id())).containsExactly(new MeetingRepository.SpeakerName("speaker_0", "Alice"));
+        assertThat(meetings.speakerNames(other.id())).isEmpty();
+        assertThat(segment.originalText()).isEqualTo("original");
+        assertThat(segment.speakerLabel()).isEqualTo("speaker_0");
+        assertThatThrownBy(() -> meetings.renameSpeaker(meeting.id(), "speaker_0", "stale", ""))
+                .isInstanceOf(ApiException.class);
+        meetings.renameSpeaker(meeting.id(), "speaker_0", "", "Alice");
+        assertThat(meetings.speakerNames(meeting.id())).isEmpty();
+        assertThat(meetings.transcript(meeting.id()).getFirst().originalText()).isEqualTo("original");
+    }
 }
