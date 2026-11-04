@@ -52,3 +52,5 @@ WebM 병합 방식의 근거: [FFmpeg 공식 concat demuxer 계약](https://gith
 Codex 실행은 별도 API 달러 예산을 예약하지 않으며 구독 사용량과 한도는 적용된다. Deepgram은 계속 별도 유료다. 기존 불확실 API 기록을 삭제하거나 실제 청구로 단정하지 않는다. PC/bridge 가동이 필요하고 추론은 OpenAI 서버에서 수행된다. CLI 도구/검색 비활성화, 요청 토큰, 일회성 세션, 한 작업 제한, 10분 제한으로 개인용 범위를 유지한다.
 
 공식 계약: [Codex 비대화형 실행](https://learn.chatgpt.com/docs/non-interactive-mode), [로그인](https://learn.chatgpt.com/docs/auth).
+
+2026-11-04 후속 요청: 사용량 화면의 전사 비용·이전 API 기록 영역을 제거한다. 사용자가 저장 기록 삭제도 요청하여 기존 7건을 일회성으로 정리했다. 새 Deepgram 요청의 원장과 예산 검사는 유지하며 공급자 측 청구에는 영향을 주지 않는다.
