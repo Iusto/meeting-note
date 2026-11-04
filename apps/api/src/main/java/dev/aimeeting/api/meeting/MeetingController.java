@@ -34,9 +34,15 @@ public class MeetingController {
     }
     @GetMapping("/{id}") public Meeting get(@PathVariable UUID id) { return meetings.find(id); }
     @PatchMapping("/{id}") public Meeting update(@PathVariable UUID id, @Valid @RequestBody UpdateMeeting request) {
-        return meetings.updateTitle(id, request.title(), request.revision());
+        Meeting result = meetings.updateTitle(id, request.title(), request.revision());
+        live.changed(id);
+        return result;
     }
-    @PostMapping("/{id}/start") public Meeting start(@PathVariable UUID id) { return meetings.start(id); }
+    @PostMapping("/{id}/start") public Meeting start(@PathVariable UUID id) {
+        Meeting result = meetings.start(id);
+        live.changed(id);
+        return result;
+    }
     @PostMapping("/{id}/stop") public Meeting stop(@PathVariable UUID id) {
         Meeting stopped = meetings.stop(id);
         live.stopMeeting(id);
@@ -50,7 +56,9 @@ public class MeetingController {
 
     @PutMapping("/{id}/speakers") public MeetingRepository.SpeakerName renameSpeaker(@PathVariable UUID id,
             @Valid @RequestBody RenameSpeaker request) {
-        return meetings.renameSpeaker(id, request.label(), request.displayName(), request.expectedName());
+        var result = meetings.renameSpeaker(id, request.label(), request.displayName(), request.expectedName());
+        live.changed(id);
+        return result;
     }
 
     public record RenameSpeaker(@NotBlank @Size(max = 100) String label,
@@ -58,7 +66,9 @@ public class MeetingController {
 
     @PutMapping("/{id}/speaker-merge") public List<MeetingRepository.SpeakerName> mergeSpeaker(@PathVariable UUID id,
             @Valid @RequestBody MergeSpeaker request) {
-        return meetings.mergeSpeaker(id, request.label(), request.target(), request.expectedTarget());
+        var result = meetings.mergeSpeaker(id, request.label(), request.target(), request.expectedTarget());
+        live.changed(id);
+        return result;
     }
     public record MergeSpeaker(@NotBlank @Size(max = 100) String label,
             @Size(max = 100) String target, @Size(max = 100) String expectedTarget) {}
@@ -68,14 +78,18 @@ public class MeetingController {
     }
     @PutMapping("/{id}/segments/{segmentId}/speaker") public List<MeetingRepository.SpeakerOverride> overrideSpeaker(
             @PathVariable UUID id, @PathVariable UUID segmentId, @Valid @RequestBody OverrideSpeaker request) {
-        return meetings.overrideSpeaker(id, segmentId, request.label(), request.expectedLabel());
+        var result = meetings.overrideSpeaker(id, segmentId, request.label(), request.expectedLabel());
+        live.changed(id);
+        return result;
     }
     public record OverrideSpeaker(@Size(max = 100) String label, @Size(max = 100) String expectedLabel) {}
 
     @PatchMapping("/{meetingId}/segments/{segmentId}")
     public TranscriptSegment correct(@PathVariable UUID meetingId, @PathVariable UUID segmentId,
                                      @Valid @RequestBody CorrectSegment request) {
-        return meetings.correct(meetingId, segmentId, request.revision(), request.displayText(), "USER", request.reason(), true);
+        var result = meetings.correct(meetingId, segmentId, request.revision(), request.displayText(), "USER", request.reason(), true);
+        live.changed(meetingId);
+        return result;
     }
 
     public record CreateMeeting(@NotBlank @Size(max = 200) String title, InputSource inputSource, UUID topicId) {}

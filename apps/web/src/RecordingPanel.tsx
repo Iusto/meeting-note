@@ -32,6 +32,8 @@ export function RecordingPanel({ meetingId, isLive, aiEnabled = false, aiConnect
   const alive = useRef(true)
   const finished = useRef(onFinished)
   finished.current = onFinished
+  const live = useRef(isLive)
+  live.current = isLive
   const transport = useCallback(() => ({
     upload: api.uploadChunk,
     complete: (count: number) => api.completeRecording(meetingId, count),
@@ -58,7 +60,7 @@ export function RecordingPanel({ meetingId, isLive, aiEnabled = false, aiConnect
         unlock = await acquireRecordingLock(meetingId)
         const session = await recordingStore.get(meetingId)
         if (session) {
-          await recordingStore.save({ ...session, stopped: !isLive })
+          await recordingStore.save({ ...session, stopped: !live.current })
           const complete = await syncRecording(meetingId, recordingStore, transport())
           if (alive.current) {
             setMessage(complete ? '보관한 청크 복구 완료' : '청크 동기화 완료 · 마이크를 선택해 녹음을 재개할 수 있습니다.')
@@ -69,7 +71,24 @@ export function RecordingPanel({ meetingId, isLive, aiEnabled = false, aiConnect
       await refresh()
     } catch (error) { if (alive.current) setMessage(error instanceof Error ? error.message : '업로드를 다시 시도해 주세요.') }
     finally { unlock?.(); syncing.current = false }
-  }, [isLive, meetingId, refresh, transport])
+  }, [meetingId, refresh, transport])
+
+  useEffect(() => {
+    if (isLive || !engine.current) return
+    const current = engine.current
+    engine.current = undefined
+    setBusy(true)
+    // Another device explicitly ended the meeting. Flush this device's original
+    // recording too, without issuing another meeting-stop request.
+    void Promise.resolve().then(() => onStreamStopping?.()).catch(() => {})
+      .then(() => current.stop())
+      .catch(error => { if (alive.current) setMessage(error instanceof Error ? error.message : '녹음 저장 상태를 확인하세요.') })
+      .finally(() => {
+        microphone.current = undefined
+        release.current?.(); release.current = undefined
+        if (alive.current) { setRecording(false); setBusy(false); void refresh().catch(() => {}) }
+      })
+  }, [isLive, onStreamStopping, refresh])
 
   useEffect(() => {
     alive.current = true
@@ -120,6 +139,13 @@ export function RecordingPanel({ meetingId, isLive, aiEnabled = false, aiConnect
       const recorder = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 64_000 })
       const current = new MicrophoneRecording(recorder, stream, meetingId, recordingStore, transport(), (text) => { if (alive.current) setMessage(text) }, previous)
       const streamError = await current.start(aiEnabled ? onStreamStarted : undefined)
+      if (!live.current) {
+        await onStreamStopping?.()
+        await current.stop()
+        release.current?.(); release.current = undefined
+        await refresh()
+        return
+      }
       microphone.current = stream
       engine.current = current
       setRecording(true)
@@ -176,7 +202,7 @@ export function RecordingPanel({ meetingId, isLive, aiEnabled = false, aiConnect
   return (
     <section className="mt-6 rounded-3xl border border-moss/15 bg-white p-6" aria-label="마이크 녹음">
       <h2 className="text-xl font-black">마이크 녹음</h2>
-      <p className="mt-2 text-sm leading-6 text-slate-500">원본 음성은 이 브라우저와 개인 서버에 독립적으로 저장됩니다. {aiEnabled ? '실시간 전사 장애가 발생해도 원본 녹음은 계속됩니다.' : '외부 AI로 전송하지 않습니다.'} 화면을 닫으면 녹음은 중지되며 저장된 청크는 복구할 수 있습니다.</p>
+      <p className="mt-2 text-sm leading-6 text-slate-500">마이크를 시작하면 원본 음성이 이 브라우저와 개인 서버에 독립적으로 저장됩니다. {aiEnabled ? '실시간 전사 장애가 발생해도 원본 녹음은 계속됩니다.' : '외부 AI로 전송하지 않습니다.'} 녹음 기기의 화면을 닫으면 해당 녹음은 중지되며 저장된 청크는 복구할 수 있습니다. 보기만 하는 창을 닫아도 다른 기기의 녹음은 계속됩니다.</p>
       {!recording && local && !local.stopped && isLive && <p className="mt-4 text-sm text-amber-900">중단 전 청크를 보존한 채 같은 회의에서 이어 녹음합니다. 중단된 동안의 소리는 복구되지 않습니다.</p>}
       {!recording && !local?.stopped && saved?.state !== 'COMPLETED' && isLive && <>
         <label className="mt-4 block text-sm font-bold" htmlFor="microphone">마이크 선택</label>

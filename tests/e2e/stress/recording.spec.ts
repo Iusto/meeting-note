@@ -9,7 +9,7 @@ test('sustains synthetic recording through an upload outage and verifies the com
   test.setTimeout(minutes * 60_000 + 120_000)
   let meetingId: string | undefined
   const sockets: string[] = []
-  page.on('websocket', (socket) => sockets.push(socket.url()))
+  page.on('websocket', (socket) => { if (new URL(socket.url()).searchParams.get('mode') !== 'watch') sockets.push(socket.url()) })
   const checkpoints: { elapsedMs: number; browserStorage: string; state: string }[] = []
   try {
     await page.goto('/meetings')

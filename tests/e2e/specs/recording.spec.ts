@@ -28,7 +28,7 @@ async function startRecording(page: Page) {
 
 test('records synthetic microphone, persists verified audio and plays it after reload', async ({ page }) => {
   const sockets: string[] = []
-  page.on('websocket', (socket) => sockets.push(socket.url()))
+  page.on('websocket', (socket) => { if (new URL(socket.url()).searchParams.get('mode') !== 'watch') sockets.push(socket.url()) })
   const meetingId = await createRecording(page)
   await startRecording(page)
   await expect(page.getByText(/브라우저 보관: [1-9]/)).toBeVisible({ timeout: 12_000 })

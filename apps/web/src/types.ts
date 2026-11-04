@@ -47,6 +47,7 @@ export interface TranscriptSegment {
 }
 
 export type LiveEventType =
+  | 'meeting.changed'
   | 'session.ready'
   | 'transcript.partial'
   | 'transcript.final'

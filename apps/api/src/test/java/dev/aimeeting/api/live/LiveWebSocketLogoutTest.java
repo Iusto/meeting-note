@@ -31,6 +31,95 @@ import org.springframework.web.socket.WebSocketSession;
 
 class LiveWebSocketLogoutTest {
     @Test
+    void viewersReceiveProducerEventsAndEditsWithoutOpeningProvidersOrStoppingRecording() throws Exception {
+        AppProperties properties = new AppProperties("a-valid-owner-token-000000000000", List.of(), Path.of("target"), false, 100);
+        SessionService auth = sessionService(properties);
+        String recorderAuth = auth.login("a-valid-owner-token-000000000000");
+        String viewerAuth = auth.login("a-valid-owner-token-000000000000");
+        UUID meetingId = UUID.randomUUID();
+        UUID otherId = UUID.randomUUID();
+        MeetingRepository meetings = mock(MeetingRepository.class);
+        SpeechProvider provider = mock(SpeechProvider.class);
+        DeepgramLiveSessionFactory deepgram = mock(DeepgramLiveSessionFactory.class);
+        DeepgramMeetingPoc live = mock(DeepgramMeetingPoc.class);
+        when(meetings.find(meetingId)).thenReturn(new Meeting(meetingId, "live", "STARTED", "LIVE", null, null, null, 1));
+        when(meetings.find(otherId)).thenReturn(new Meeting(otherId, "other", "STOPPED", "LIVE", null, null, null, 1));
+        when(live.streamSessionId()).thenReturn(UUID.randomUUID());
+        when(live.completion()).thenReturn(new CompletableFuture<>());
+        var emit = new java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<dev.aimeeting.api.provider.SpeechEvent>>();
+        when(deepgram.open(eq(meetingId), eq(0L), any())).thenAnswer(call -> {
+            emit.set(call.getArgument(2));
+            return CompletableFuture.completedFuture(live);
+        });
+        LiveWebSocketHandler handler = new LiveWebSocketHandler(meetings, provider, deepgram, new ObjectMapper(), auth);
+        try {
+            WebSocketSession viewer = watchSocket(viewerAuth, meetingId);
+            WebSocketSession second = watchSocket(recorderAuth, meetingId);
+            WebSocketSession other = watchSocket(viewerAuth, otherId);
+            handler.afterConnectionEstablished(viewer);
+            handler.afterConnectionEstablished(second);
+            handler.afterConnectionEstablished(other);
+            verifyNoInteractions(deepgram, provider);
+            verify(meetings, never()).createStreamSession(any());
+
+            WebSocketSession recorder = socket(recorderAuth, meetingId, false);
+            handler.afterConnectionEstablished(recorder);
+            emit.get().accept(new dev.aimeeting.api.provider.SpeechEvent("transcript.partial", meetingId, null,
+                    "synthetic-partial", 1L, 0L, 100L, "synthetic", null, null, null, null, null, null, null));
+            emit.get().accept(new dev.aimeeting.api.provider.SpeechEvent("transcript.final", meetingId, null,
+                    "synthetic-final", 2L, 0L, 100L, "synthetic", null, null, UUID.randomUUID(), 0, null, null, "FINAL"));
+            handler.changed(meetingId);
+            for (WebSocketSession target : List.of(viewer, second)) {
+                verify(target, timeout(2000)).sendMessage(argThat(message -> message.getPayload().toString().contains("transcript.partial")));
+                verify(target, timeout(2000)).sendMessage(argThat(message -> message.getPayload().toString().contains("transcript.final")));
+                verify(target, timeout(2000)).sendMessage(argThat(message -> message.getPayload().toString().contains("meeting.changed")));
+            }
+            verify(other, never()).sendMessage(argThat(message -> message.getPayload().toString().contains("synthetic-final")));
+            handler.afterConnectionClosed(viewer, CloseStatus.NORMAL);
+            auth.logout(viewerAuth);
+            verify(other).close(any(CloseStatus.class));
+            verify(live, never()).close();
+            verify(live, never()).finish();
+            verify(meetings, never()).stop(any());
+            verify(deepgram, times(1)).open(eq(meetingId), eq(0L), any());
+            verifyNoInteractions(provider);
+        } finally { handler.shutdownWatchers(); }
+    }
+
+    @Test
+    void mockViewersShareOneRunAndClosingAViewerDoesNotStopIt() throws Exception {
+        AppProperties properties = new AppProperties("a-valid-owner-token-000000000000", List.of(), Path.of("target"), false, 100);
+        SessionService auth = sessionService(properties);
+        String authId = auth.login("a-valid-owner-token-000000000000");
+        UUID id = UUID.randomUUID();
+        MeetingRepository meetings = mock(MeetingRepository.class);
+        SpeechProvider provider = mock(SpeechProvider.class);
+        when(meetings.find(id)).thenReturn(new Meeting(id, "mock", "STARTED", "MOCK", null, null, null, 1));
+        UUID streamId = UUID.randomUUID();
+        when(meetings.createStreamSession(id)).thenReturn(streamId);
+        LiveWebSocketHandler handler = new LiveWebSocketHandler(meetings, provider, new ObjectMapper(), auth);
+        try {
+            WebSocketSession first = watchSocket(authId, id);
+            WebSocketSession second = watchSocket(authId, id);
+            handler.afterConnectionEstablished(first);
+            handler.afterConnectionEstablished(second);
+            handler.afterConnectionClosed(first, CloseStatus.NORMAL);
+            handler.afterConnectionEstablished(watchSocket(authId, id));
+            verify(provider, times(1)).stream(eq(id), eq(streamId), any());
+            verify(meetings, times(1)).createStreamSession(id);
+            verify(provider, never()).stopMeeting(any());
+            verify(provider, never()).stop(any());
+            verify(meetings, never()).stop(any());
+        } finally { handler.shutdownWatchers(); }
+    }
+
+    private WebSocketSession watchSocket(String authId, UUID id) {
+        WebSocketSession result = socket(authId, id, false);
+        when(result.getUri()).thenReturn(URI.create("ws://localhost/api/v1/meetings/" + id + "/live?mode=watch"));
+        return result;
+    }
+
+    @Test
     void liveSocketRelaysPcmAndGracefullyFinishesWithoutStoppingTheMeeting() throws Exception {
         AppProperties properties = new AppProperties("a-valid-owner-token-000000000000", List.of(), Path.of("target"), false, 100);
         SessionService auth = sessionService(properties);

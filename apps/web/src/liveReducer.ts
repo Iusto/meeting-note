@@ -16,6 +16,7 @@ export type LiveAction =
   | { type: 'hydrate'; segments: TranscriptSegment[] }
   | { type: 'connecting'; reconnecting?: boolean }
   | { type: 'socket.closed' }
+  | { type: 'watch.disconnected' }
   | { type: 'playback.finished' }
   | { type: 'event'; event: LiveEvent }
 
@@ -67,7 +68,15 @@ function patchSegment(
 }
 
 export function liveReducer(state: LiveState, action: LiveAction): LiveState {
+  if (action.type === 'watch.disconnected') return { ...state, partials: {} }
   if (action.type === 'hydrate') {
+    // Stored segments are append-only. A final event may arrive while this GET is
+    // in flight, so retain it and never replace a newer revision with an older snapshot.
+    const merged = new Map(state.segments.map(segment => [segment.segmentId, segment]))
+    action.segments.forEach(segment => {
+      const current = merged.get(segment.segmentId)
+      if (!current || current.revision <= segment.revision) merged.set(segment.segmentId, segment)
+    })
     const seenFinalEvents = { ...state.seenFinalEvents }
     const partials = { ...state.partials }
     action.segments.forEach((segment) => {
@@ -75,7 +84,7 @@ export function liveReducer(state: LiveState, action: LiveAction): LiveState {
       delete partials[segment.eventId]
       delete partials[segment.segmentId]
     })
-    return { ...state, segments: sorted(action.segments), partials, seenFinalEvents }
+    return { ...state, segments: sorted([...merged.values()]), partials, seenFinalEvents }
   }
   if (action.type === 'connecting') {
     return { ...state, connection: action.reconnecting ? 'reconnecting' : 'connecting', notice: undefined }
@@ -91,7 +100,7 @@ export function liveReducer(state: LiveState, action: LiveAction): LiveState {
   if (event.type === 'session.ready') {
     return { ...state, connection: 'connected', streamSessionId: event.streamSessionId, notice: undefined }
   }
-  if (event.type === 'stream.stopped') return { ...state, connection: 'stopped' }
+  if (event.type === 'stream.stopped') return { ...state, connection: 'stopped', partials: {} }
   if (event.type === 'stream.warning') return { ...state, notice: event.message ?? '스트림 상태를 확인해 주세요.' }
   if (event.type === 'stream.error') {
     return { ...state, connection: 'error', notice: event.message ?? '실시간 전사 연결에 문제가 생겼습니다.' }

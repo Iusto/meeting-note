@@ -164,3 +164,11 @@ ADR-021에 따라 별도 유료 POC를 선행하지 않고 웹앱의 녹음→�
 - `apps/web`: `npm run build`, `npm run lint`, `npm test` — 통과, 단위 테스트 29개. 회의 내 검색의 원문·교정문·표시 이름·대소문자·빈 검색·리터럴 와일드카드 처리 포함.
 - `tests/e2e`: `playwright test specs/speaker-search.spec.ts --project=regression --no-deps` — 2개 통과. 합성 API/WebSocket만 사용해 1440px/390px에서 합치기·후속 발언·새로고침 후 유지·분리·개별 지정/복원·이름/원문 검색과 결과 이동·전체 검색 요청·가로 넘침 없음을 확인했다. 초기 테스트의 가짜 화자 라벨을 실제 공급자 형식으로 수정한 뒤 통과했다.
 - Docker api/web 재배포 후 health UP, 실제 PostgreSQL V13 migration 성공. 실회의 전사·요약 생성 호출 없음, 추가 유료 API 비용 0. 자동 화자 인식률 향상이나 전사 모델 간 품질 비교를 검증한 결과는 아니다.
+
+## 2026-11-04 · 기본 실시간 보기 검증
+
+- API `mvnw.cmd test -q`: 총 245개 중 224개 통과·21개 opt-in 건너뜀. 보기 소켓의 공급자 연결·stream session 미생성, 녹음 송신 이벤트의 동일 회의 전달, 다른 회의 격리, 보기 종료·별도 인증 세션 로그아웃 후 녹음 유지, Mock 공유 재생을 검증했다. 실제 랜덤 포트 Spring 서버와 Java WebSocket 두 개로 READY→임시→확정→화자→교정→종료를 수신하고, 한 창 종료 뒤에도 나머지 창의 이벤트·저장과 stream session 한 개를 확인했다. 별도 로컬 녹음 회의의 명시적 종료 알림과 보기 소켓 유지도 확인했다. 공급자는 합성 Mock이다.
+- Web `npm run build`, `npm run lint`, `npm test`: 통과, 단위 테스트 30개. 조회 도중 도착한 새 확정 발언 보존과 낮은 revision 스냅샷의 덮어쓰기 방지를 포함한다.
+- `tests/e2e`: `npx playwright test --config playwright.sync.config.ts` — 6개 통과(49.6초). 독립 모바일/데스크톱 브라우저 두 개의 자동 연결·임시/확정 표시·화자 이름/수정 공유·단절 동안 저장된 발언 복구·마이크 요청 0·자동 AI 생성 0, 원격 종료 시 녹음 청크 마무리, 기존 예산 오류 후 재연결·이어 녹음·화자 합치기/검색을 확인했다. 모의 HTTP/WebSocket과 가짜 마이크를 사용했다. 초기 가상 서버의 화자 배열·보기 경로 누락과 테스트의 접힌 패널 조작을 수정했고, 초기 마이크 시작 지연 실패는 재실행에서 통과했다.
+- 실제 회의 음성·전사·Codex 생성 요청 없이 검증했다. 추가 유료 API 호출 0회, 비용 0 USD. 실제 휴대폰 하드웨어·잠금/절전·장시간 품질과 한국어 STT/화자 인식률은 미검증이다.
+- Docker api/web 빌드·재배포 완료. API health UP, Tailscale HTTPS 웹 HTTP 200, 미인증 API 401을 확인했다. 기존 Codex 모드·OpenAI API 키 없음과 DB·녹음 볼륨을 유지했다. 녹음 전용 기존 E2E의 STT 연결 집계에서는 보기 WebSocket을 제외하도록 수정했다. 별도 opt-in 장시간·서버 재시작 시험은 이번에 재실행하지 않았다.

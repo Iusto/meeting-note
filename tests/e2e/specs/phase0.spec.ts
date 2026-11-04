@@ -243,7 +243,7 @@ test('stops a fake stream during its partial event without persisting a final se
   expect(transcript).toEqual([])
 })
 
-test('stops the active meeting on logout and allows a new meeting after login', async ({ page }) => {
+test('closes the viewing socket on logout and allows a new meeting after shared mock playback finishes', async ({ page }) => {
   const eventTypes: string[] = []
   let resolveReady!: () => void
   let resolveClosed!: () => void

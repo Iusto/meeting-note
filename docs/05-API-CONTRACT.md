@@ -128,3 +128,9 @@ WebSocket `stream.error`에 안전한 사용자 안내용 `message`를 추가한
 `GET /meetings/{id}/speakers`는 `mergedInto`(없으면 null 또는 생략)를 함께 반환한다. `PUT /meetings/{id}/speaker-merge`는 `{label,target,expectedTarget}`을 받아 최신 화자 목록을 반환한다. `target:null`은 해당 라벨의 연결만 해제한다. 원래 이름은 유지한다. 기존 연결 불일치 409 `SPEAKER_MERGE_CHANGED`, 같은 그룹 연결 400 `SAME_SPEAKER_GROUP`.
 
 `GET /meetings/{id}/speaker-overrides`: `{segmentId,label}` 목록. `PUT /meetings/{id}/segments/{segmentId}/speaker`: `{label,expectedLabel}`, 최초 지정의 expectedLabel은 null, label null은 사용자 지정 해제. 해당 회의에 감지된 화자만 선택 가능. 다른 회의의 발언은 404, 기존 지정 불일치는 409 `SPEAKER_OVERRIDE_CHANGED`. 모든 경로는 `/api/v1` 아래이며 소유자 인증을 요구한다.
+
+### 기본 실시간 보기
+
+`WS /api/v1/meetings/{id}/live?mode=watch`는 CREATED/STARTED/STOPPED 회의에서 인증된 소유자가 구독하는 읽기 연결이다. 시작 시 `session.ready`를 보내며, 이 이벤트는 마이크나 공급자 연결 성공을 뜻하지 않는다. LIVE/LOCAL_RECORDING 보기 연결은 음성 공급자·stream session·비용 예약을 생성하지 않는다. 기존 음성 전송 경로는 `mode=watch` 없이 사용한다. Mock의 최초 보기는 진행 중인 회의에 공유 가상 재생을 한 번 시작한다.
+
+해당 회의의 partial/final/speaker/correction/error 이벤트를 전달한다. `meeting.changed`는 제목·회의 상태·화자 이름/합치기/개별 지정·수동 발언 교정 저장 이후 전송하는 재조회 알림이며 본문을 포함하지 않는다. 클라이언트는 연결 완료·재연결·변경·stream.stopped 시 회의/전사/화자 매핑을 조회한다. `stream.stopped`는 개별 음성 연결 종료일 수도 있으므로 회의 종료 여부는 REST 상태로 확인한다. 보기 연결은 이 이벤트로 자동 종료하지 않는다. 소켓 단절·로그아웃은 보기 연결만 정리한다. 기존 녹음 기기 세션의 로그아웃 종료 정책은 유지한다.

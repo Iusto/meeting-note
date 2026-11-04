@@ -4,20 +4,26 @@ async function mockMeeting(page: Page, inputSource: 'LIVE' | 'LOCAL_RECORDING') 
   const uploads: number[] = []
   let status = 'STARTED'
   let completed = false
+  let notify: (() => void) | undefined
+  let stopRequests = 0
+  await page.routeWebSocket('**/api/v1/meetings/synthetic/live?mode=watch', socket => {
+    socket.send(JSON.stringify({ type: 'session.ready', meetingId: 'synthetic' }))
+    notify = () => socket.send(JSON.stringify({ type: 'meeting.changed', meetingId: 'synthetic' }))
+  })
   await page.route('**/api/v1/**', async route => {
     const url = new URL(route.request().url())
     let body: unknown = {}
     if (url.pathname.endsWith('/ai/configuration')) body = { enabled: true, speechAvailable: true, llmAvailable: true, maximumAudioSeconds: 14400, maximumMeetingUsd: 10 }
     else if (url.pathname.endsWith('/recording-chunks')) uploads.push(Number(url.searchParams.get('sequence')))
     else if (url.pathname.endsWith('/recording-complete')) completed = true
-    else if (url.pathname.endsWith('/stop')) status = 'STOPPED'
-    else if (url.pathname.endsWith('/transcript') || url.pathname.endsWith('/topics')) body = []
+    else if (url.pathname.endsWith('/stop')) { status = 'STOPPED'; stopRequests++ }
+    else if (url.pathname.endsWith('/transcript') || url.pathname.endsWith('/topics') || url.pathname.endsWith('/speakers') || url.pathname.endsWith('/speaker-overrides')) body = []
     else if (url.pathname.endsWith('/summary')) { await route.fulfill({ status: 404, json: { message: 'No summary' } }); return }
     if (url.pathname.endsWith('/recording') || url.pathname.endsWith('/recording-complete')) body = { state: completed ? 'COMPLETED' : 'UPLOADING', bytes: 0, durationMs: 0, mimeType: 'audio/webm', chunkCount: uploads.length }
     if (url.pathname.endsWith('/meetings/synthetic') || url.pathname.endsWith('/stop')) body = { id: 'synthetic', title: 'Synthetic reconnect', inputSource, status, startedAt: new Date(Date.now() - 10_000).toISOString(), revision: 1 }
     await route.fulfill({ json: body })
   })
-  return uploads
+  return { uploads, stopRemotely: () => { status = 'STOPPED'; notify?.() }, stopRequests: () => stopRequests }
 }
 
 async function start(page: Page, name = '마이크 녹음 시작') {
@@ -26,9 +32,9 @@ async function start(page: Page, name = '마이크 녹음 시작') {
 }
 
 test('retries AI after budget failure while recording keeps uploading', async ({ page }) => {
-  const uploads = await mockMeeting(page, 'LIVE')
+  const { uploads } = await mockMeeting(page, 'LIVE')
   let connections = 0
-  await page.routeWebSocket('**/api/v1/meetings/synthetic/live?*', socket => {
+  await page.routeWebSocket('**/api/v1/meetings/synthetic/live?audioOffsetMs=*', socket => {
     connections++
     if (connections === 1) {
       socket.send(JSON.stringify({ type: 'stream.error', meetingId: 'synthetic', message: '월 예산이 부족합니다.' }))
@@ -51,7 +57,7 @@ test('retries AI after budget failure while recording keeps uploading', async ({
 })
 
 test('reload retains chunks and resumes the same meeting without sequence collisions', async ({ page }) => {
-  const uploads = await mockMeeting(page, 'LOCAL_RECORDING')
+  const { uploads } = await mockMeeting(page, 'LOCAL_RECORDING')
   await page.goto('/meetings/synthetic/live')
   await start(page)
   await expect.poll(() => uploads.length, { timeout: 10_000 }).toBeGreaterThan(1)
@@ -65,4 +71,16 @@ test('reload retains chunks and resumes the same meeting without sequence collis
   expect(new Set(uploads).size).toBe(uploads.length)
   await page.getByRole('button', { name: '녹음 종료 및 저장' }).click()
   await expect(page.getByText('서버 저장 완료', { exact: false })).toBeVisible()
+})
+
+test('a remote meeting stop flushes the recording device without sending another stop request', async ({ page }) => {
+  const { uploads, stopRemotely, stopRequests } = await mockMeeting(page, 'LOCAL_RECORDING')
+  await page.goto('/meetings/synthetic/live')
+  await start(page)
+  await expect(page.getByRole('button', { name: '녹음 종료 및 저장' })).toBeVisible()
+  await expect.poll(() => uploads.length).toBeGreaterThan(0)
+  stopRemotely()
+  await expect(page.getByText('서버 저장 완료', { exact: false })).toBeVisible()
+  await expect(page.getByRole('button', { name: '녹음 종료 및 저장' })).toHaveCount(0)
+  expect(stopRequests()).toBe(0)
 })

@@ -172,7 +172,7 @@ test.afterAll(async () => {
 
 test('keeps browser audio through an owned API crash and completes after restart', async ({ page }, testInfo) => {
   const sockets: string[] = []
-  page.on('websocket', (socket) => sockets.push(socket.url()))
+  page.on('websocket', (socket) => { if (new URL(socket.url()).searchParams.get('mode') !== 'watch') sockets.push(socket.url()) })
   await page.goto('/meetings')
   await loginOwner(page)
 
@@ -253,7 +253,7 @@ test('keeps browser audio through an owned API crash and completes after restart
 test('stops safely on the browser quota boundary and recovers acknowledged audio', async ({ page, context }, testInfo) => {
   test.skip(!quotaEnabled, 'Set OFFLINE_BROWSER_QUOTA_TEST_ENABLED=true to run the Chrome quota-policy check.')
   const sockets: string[] = []
-  page.on('websocket', (socket) => sockets.push(socket.url()))
+  page.on('websocket', (socket) => { if (new URL(socket.url()).searchParams.get('mode') !== 'watch') sockets.push(socket.url()) })
   await page.goto('/meetings')
   await loginOwner(page)
 

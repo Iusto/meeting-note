@@ -16,6 +16,17 @@ const event = (overrides: Partial<LiveEvent> = {}): LiveEvent => ({
 })
 
 describe('liveReducer', () => {
+  it('retains finals and newer corrections received while a storage snapshot is in flight', () => {
+    const final = liveReducer(initialLiveState, { type: 'event', event: event({ type: 'transcript.final', segmentId: 's1' }) })
+    const snapshot = final.segments[0]
+    const corrected = liveReducer(final, { type: 'event', event: event({ type: 'transcript.corrected', segmentId: 's1', revision: 2, displayText: 'reviewed' }) })
+    const withNewFinal = liveReducer(corrected, { type: 'event', event: event({ type: 'transcript.final', segmentId: 's2', eventId: 'e2' }) })
+    const hydrated = liveReducer(withNewFinal, { type: 'hydrate', segments: [snapshot] })
+    expect(hydrated.segments).toHaveLength(2)
+    expect(hydrated.segments[0]).toMatchObject({ segmentId: 's1', revision: 2, displayText: 'reviewed' })
+    const duplicate = liveReducer(hydrated, { type: 'event', event: event({ type: 'transcript.final', segmentId: 's2', eventId: 'e2' }) })
+    expect(duplicate.segments).toHaveLength(2)
+  })
   it('ignores stale partials and replaces only with a newer sequence', () => {
     const first = liveReducer(initialLiveState, { type: 'event', event: event({ sequence: 2, text: '새 임시 발언' }) })
     const stale = liveReducer(first, { type: 'event', event: event({ sequence: 1, text: '오래된 발언' }) })

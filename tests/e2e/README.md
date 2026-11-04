@@ -60,4 +60,6 @@ PostgreSQL must already listen on `127.0.0.1:55432` for the local `ai_meeting` r
 
 ## 연결 복구 UI 회귀
 
+`npx playwright test --config playwright.sync.config.ts`는 같은 오프라인 환경에서 기본 실시간 보기도 검증한다. 독립 모바일/데스크톱 브라우저의 자동 구독·발언/화자 변경 공유·재접속 저장 전사 복구·마이크 요청 없음·자동 AI 생성 없음, 원격 종료 후 원본 저장과 기존 화자/검색 기능을 포함한다. `mode=watch` 연결은 전사 공급자 접속이 아니므로 STT 트래픽 집계에서 제외한다.
+
 `npx playwright test --config playwright.reconnect.config.ts`는 실제 서버·유료 공급자 없이 합성 마이크와 가짜 API/WebSocket으로 재연결·녹음 재개를 확인한다. Windows에서 Vite 자식 프로세스 종료가 지연되면 웹을 별도 터미널에서 `npm run dev -- --port 5189`로 실행하고 `$env:E2E_EXTERNAL_WEB='1'`을 지정해 같은 시험을 실행한다. 종료 후 테스트용 웹만 종료한다. 파일의 실제 WebM 병합·전체 재생은 API의 FFmpeg 시험 및 Docker에서 별도로 검증해야 한다.

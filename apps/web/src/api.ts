@@ -96,3 +96,7 @@ export function liveSocketUrl(meetingId: string, audioOffsetMs?: number) {
   const query = audioOffsetMs === undefined ? '' : `?${new URLSearchParams({ audioOffsetMs: String(audioOffsetMs) })}`
   return `${protocol}//${window.location.host}${API_PREFIX}/meetings/${meetingId}/live${query}`
 }
+
+export function watchSocketUrl(meetingId: string) {
+  return `${liveSocketUrl(meetingId)}?mode=watch`
+}

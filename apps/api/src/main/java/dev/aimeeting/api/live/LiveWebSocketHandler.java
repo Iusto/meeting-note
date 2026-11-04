@@ -28,6 +28,73 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 @Component
 public class LiveWebSocketHandler extends TextWebSocketHandler {
+    private final ConcurrentHashMap<WebSocketSession, Watcher> watchers = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<UUID, UUID> watchedMockRuns = new ConcurrentHashMap<>();
+    private final java.util.concurrent.ExecutorService watchExecutor = new java.util.concurrent.ThreadPoolExecutor(
+            2, 2, 0L, java.util.concurrent.TimeUnit.MILLISECONDS, new java.util.concurrent.ArrayBlockingQueue<>(64),
+            runnable -> { Thread thread = new Thread(runnable, "meeting-watch"); thread.setDaemon(true); return thread; });
+
+    @jakarta.annotation.PreDestroy
+    void shutdownWatchers() { watchExecutor.shutdownNow(); }
+
+    private final class Watcher {
+        final WebSocketSession session;
+        final UUID meetingId;
+        final java.util.concurrent.ArrayBlockingQueue<SpeechEvent> queue = new java.util.concurrent.ArrayBlockingQueue<>(128);
+        final java.util.concurrent.atomic.AtomicBoolean writing = new java.util.concurrent.atomic.AtomicBoolean();
+        Watcher(WebSocketSession session, UUID meetingId) { this.session = session; this.meetingId = meetingId; }
+        void offer(SpeechEvent event) {
+            if (!queue.offer(event)) {
+                watchers.remove(session, this);
+                Thread.startVirtualThread(() -> closeWithError(session, "Viewer is too slow; reconnect to synchronize"));
+                return;
+            }
+            drain();
+        }
+        void drain() {
+            if (!writing.compareAndSet(false, true)) return;
+            try {
+                watchExecutor.execute(() -> {
+                    try {
+                        SpeechEvent event;
+                        while (watchers.get(session) == this && (event = queue.poll()) != null) {
+                            String authId = (String) session.getAttributes().get("authSessionId");
+                            if (!sessions.isValid(authId) || !session.isOpen()) { watchers.remove(session, this); return; }
+                            synchronized (session) {
+                                session.sendMessage(new TextMessage(mapper.writeValueAsString(event)));
+                            }
+                        }
+                    } catch (IOException | RuntimeException failure) {
+                        watchers.remove(session, this);
+                        closeWithError(session, "Viewer disconnected");
+                    } finally { writing.set(false); if (!queue.isEmpty() && watchers.get(session) == this) drain(); }
+                });
+            } catch (java.util.concurrent.RejectedExecutionException busy) {
+                writing.set(false); watchers.remove(session, this);
+                Thread.startVirtualThread(() -> closeWithError(session, "Viewer capacity reached"));
+            }
+        }
+    }
+
+    private void publish(SpeechEvent event) {
+        watchers.values().forEach(watcher -> { if (watcher.meetingId.equals(event.meetingId())) watcher.offer(event); });
+    }
+
+    public void changed(UUID meetingId) {
+        publish(new SpeechEvent("meeting.changed", meetingId, null, null, null, null, null, null, null, null, null, null, null, null, null));
+        if (watchers.values().stream().anyMatch(watcher -> watcher.meetingId.equals(meetingId))) {
+            startWatchedMock(meetings.find(meetingId));
+        }
+    }
+
+    private void startWatchedMock(Meeting meeting) {
+        if (!"STARTED".equals(meeting.status()) || !"MOCK".equals(meeting.inputSource())) return;
+        watchedMockRuns.computeIfAbsent(meeting.id(), id -> {
+            UUID streamId = meetings.createStreamSession(id);
+            provider.stream(id, streamId, this::publish);
+            return streamId;
+        });
+    }
     private static final Logger log = LoggerFactory.getLogger(LiveWebSocketHandler.class);
     private final MeetingRepository meetings;
     private final SpeechProvider provider;
@@ -73,6 +140,14 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
         if (!isRegistered(authSessionId, session) || !sessions.isValid(authSessionId)) return;
         UUID meetingId = meetingId(session);
         Meeting meeting = meetings.find(meetingId);
+        if (java.util.Arrays.asList(java.util.Objects.toString(session.getUri().getRawQuery(), "").split("&")).contains("mode=watch")) {
+            Watcher watcher = new Watcher(session, meetingId);
+            watchers.put(session, watcher);
+            if (!isRegistered(authSessionId, session) || !sessions.isValid(authSessionId)) { watchers.remove(session); return; }
+            watcher.offer(SpeechEvent.sessionReady(meetingId, null));
+            startWatchedMock(meeting);
+            return;
+        }
         if (!"STARTED".equals(meeting.status())) {
             session.close(CloseStatus.POLICY_VIOLATION.withReason("Meeting must be started first"));
             unregister(session, authSessionId);
@@ -143,9 +218,11 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
             }
             live.completion().whenComplete((reason, completionFailure) -> {
                 if (liveContexts.remove(session, context)) {
-                    send(session, new SpeechEvent(completionFailure == null ? "stream.stopped" : "stream.error",
+                    SpeechEvent completed = new SpeechEvent(completionFailure == null ? "stream.stopped" : "stream.error",
                             meetingId, live.streamSessionId(), null, null, null, null, null, null, null,
-                            null, null, null, null, completionFailure == null ? reason.name() : "PROVIDER_ERROR"));
+                            null, null, null, null, completionFailure == null ? reason.name() : "PROVIDER_ERROR");
+                    send(session, completed);
+                    publish(completed);
                 }
             });
         });
@@ -229,6 +306,8 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
     }
 
     public void stopMeeting(UUID meetingId) {
+        changed(meetingId);
+        watchedMockRuns.remove(meetingId);
         provider.stopMeeting(meetingId);
         liveContexts.forEach((session, context) -> {
             if (!context.meetingId.equals(meetingId)) return;
@@ -238,9 +317,12 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
             send(session, new SpeechEvent("stream.stopped", meetingId, context.streamSessionId, null, null,
                     null, null, null, null, null, null, null, null, null, "STOPPED_BY_USER"));
         });
+        publish(new SpeechEvent("stream.stopped", meetingId, null, null, null,
+                null, null, null, null, null, null, null, null, null, "STOPPED_BY_USER"));
     }
 
     private void terminate(WebSocketSession session, String reason) {
+        watchers.remove(session);
         LiveContext context = liveContexts.remove(session);
         if (context == null) return;
         if (context.opening != null && !context.opening.isDone()) context.opening.cancel(true);
@@ -301,7 +383,12 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void sendForContext(WebSocketSession session, LiveContext context, SpeechEvent event) {
-        if (liveContexts.get(session) == context) send(session, event);
+        // Provider finalization can finish after the recording socket disappears.
+        // Other authenticated viewers must still receive those persisted results.
+        if (!"session.ready".equals(event.type())) publish(event);
+        if (liveContexts.get(session) == context) {
+            send(session, event);
+        }
     }
 
     private void closeWithError(WebSocketSession session, String reason) {
@@ -331,8 +418,10 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void failStream(WebSocketSession session, LiveContext context, String reason) {
-        send(session, new SpeechEvent("stream.error", context.meetingId, context.streamSessionId, null, null,
-                null, null, null, null, null, null, null, null, null, "PROVIDER_ERROR", reason));
+        SpeechEvent failure = new SpeechEvent("stream.error", context.meetingId, context.streamSessionId, null, null,
+                null, null, null, null, null, null, null, null, null, "PROVIDER_ERROR", reason);
+        publish(failure);
+        send(session, failure);
         closeWithError(session, "Live speech unavailable");
     }
 
