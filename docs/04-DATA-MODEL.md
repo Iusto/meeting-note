@@ -1,6 +1,6 @@
 # 04. PostgreSQL 데이터 설계 (단일 사용자)
 
-현재 스키마는 [Flyway V1–V10](../apps/api/src/main/resources/db/migration)에 있다. 아래는 구현된 테이블의 핵심 필드이며 전체 DDL 복사본은 아니다. 원문·비용·계정 보존의 이유와 제약을 설명한다.
+현재 스키마는 [Flyway V1–V14](../apps/api/src/main/resources/db/migration)에 있다. 아래는 구현된 테이블의 핵심 필드이며 전체 DDL 복사본은 아니다. 원문·비용·계정 보존의 이유와 제약을 설명한다.
 
 ## 원칙
 - 서버는 사용자 한 명만을 대상으로 설계. **조직, 멤버십, 결제, 구독, 팀 권한 테이블 없음**.
@@ -21,13 +21,14 @@
 | `stream_sessions` | id, meeting_id, provider, provider_session_id, audio_offset_ms, started_at, ended_at, close_reason | 재연결/비용 단위 |
 | `active_deepgram_sessions` | meeting_id, stream_session_id, request_id, claimed_at | 회의별 활성 POC 세션 1개. stream/request unique FK로 재시작 비용 대사 연결 |
 | `recordings` | id, meeting_id, state, path, sha256, bytes, duration_ms | 오디오 파일은 로컬에 저장 |
+| `recording_imports` | meeting_id, file_format, state, error_message, created_at | 회의당 가져오기 작업 1개. 전사·요약의 상태와 실패 정보를 저장하며 회의 삭제 시 함께 삭제 |
 | `recording_chunks` | recording_id, sequence_no, start_ms, end_ms, sha256, mime_type, bytes, path | `(recording_id, sequence_no)` 복합 PK |
 | `speakers` | id, meeting_id, provider_label, display_name, review_state | `(meeting_id, provider_label)` unique |
 | `transcript_segments` | id, meeting_id, provider_event_id, start_ms, end_ms, original_text, display_text, transcript_status, speaker_id nullable, speaker_status, revision, user_locked | `(meeting_id, provider_event_id)` unique, time 인덱스 |
 | `transcript_revisions` | id, segment_id, before_text, after_text, actor, reason, created_at | 원문 불변, 교정 패치 감사 |
 | `correction_suggestions` | id, meeting_id, segment_id, expected_revision, span_start, original_span, replacement, reason, state | PENDING/APPLIED/REJECTED, 승인 시 원문 span·revision 검증 |
 | `meeting_summaries` | id, meeting_id, version, provider, content_json, snapshot_json, created_at | 회의별 version unique. 근거와 revision snapshot 보존 |
-| `app_settings` | id, monthly_budget_usd, warn_at_percent, per_meeting_max_minutes, recording_retention_days, revision | `id=1`, 설정 변경·비용 예약 잠금 기준 |
+| `app_settings` | id, monthly_budget_usd, warn_at_percent, per_meeting_budget_usd, per_meeting_max_minutes, recording_retention_days, revision | `id=1`, 설정 변경·비용 예약 잠금 기준 |
 | `ai_usage_records` | id(요청 멱등 키), meeting_id nullable, topic_id nullable, provider, model, operation, price_version, state, reservation_month, reserved_usd, estimated_usd, actual_usd nullable, actual_source, maximum_audio_seconds, measured_audio_seconds, input_tokens, output_tokens, created_at, updated_at | 회의·주제 중 하나에 비용을 귀속한다. 삭제 후에도 원장을 보존하며 FK/cascade를 두지 않음 |
 
 용어 후보는 현재 `glossary_terms`의 상태로 관리한다. 결정사항·액션아이템은 `meeting_summaries.content_json`에 포함한다. 별도 `glossary_suggestions`, `action_items`, `decisions`, `processing_jobs` 테이블은 구현하지 않았다. 향후 필요할 때 새 migration으로 도입한다.
@@ -57,10 +58,14 @@
 4. `V4__complete_local_recording_storage.sql` — 단일 회의별 녹음, 청크 순번/해시/파일 메타데이터, 녹음 최종화.
 5. `V5__create_offline_glossary_and_review.sql` — 공유 용어·별칭·주제 연결, 검토 교정 제안, 근거/revision snapshot을 보존하는 버전형 가상 요약.
 6. `V6__create_app_settings.sql` — 단일 사용자 예산·경고 기준·유료 작업 시간·보관 검토 주기와 revision.
-7. `V7__create_ai_usage_ledger.sql` — 공급자 독립 비용 원장. 예산 변경과 원장 갱신은 설정 행 잠금으로 직렬화한다. API 사용량 집계와 완료 녹음 집계는 각각 요청 예약 월·회의 시작 월(UTC)을 사용한다. 실제 공급자 호출은 아직 연결하지 않는다.
+7. `V7__create_ai_usage_ledger.sql` — 공급자 독립 비용 원장. 예산 변경과 원장 갱신은 설정 행 잠금으로 직렬화한다. API 사용량 집계와 완료 녹음 집계는 각각 요청 예약 월·회의 시작 월(UTC)을 사용한다. 별도 외부 API 모드에서 사용한다.
 8. `V8__guard_active_deepgram_sessions.sql` — 회의별 활성 POC 세션과 비용 요청의 연결을 보존한다.
 9. `V9__create_owner_authentication.sql` — 단일 소유자 비밀번호 해시와 영속 세션 해시·만료 시간을 보관한다.
 10. `V10__support_topic_ai_usage.sql` — AI 비용 원장의 주체를 회의 또는 주제 중 정확히 하나로 제한하고, OpenAI 용어 후보 출처를 허용한다. 주제가 삭제돼도 월 비용 기록은 유지한다.
+11. `V11__configure_meeting_budget.sql` — 회의당 예산 설정을 추가하고 기존 월 예산을 유지한다.
+12. `V12__support_codex_glossary_source.sql` — 용어 후보의 출처로 Codex를 허용한다.
+13. `V13__merge_speakers.sql` — 회의별 화자 합치기와 발언별 화자 지정·복원 정보를 저장한다.
+14. `V14__create_recording_imports.sql` — 업로드 회의 모드와 저장된 녹음의 전사·자동 요약 작업을 추가한다.
 
 ## 보관 정책
 녹음, 임시 chunk, 로그, 전사/요약, 백업 각각의 보존·삭제 정책을 분리한다. 기본 보존기간은 사용자 설정 이전에는 강제 자동삭제하지 않으며, UI에서 용량과 삭제 대상을 알려준다.

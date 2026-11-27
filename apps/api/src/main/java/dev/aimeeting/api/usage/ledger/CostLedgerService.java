@@ -176,6 +176,20 @@ public class CostLedgerService {
         return accumulate(jdbc.query("SELECT * FROM ai_usage_records WHERE meeting_id=?", this::mapEntry, meetingId));
     }
 
+    public long committedTranscriptionSeconds(UUID meetingId) {
+        return transcriptionSeconds(jdbc.query("SELECT * FROM ai_usage_records WHERE meeting_id=?", this::mapEntry, meetingId));
+    }
+
+    private long transcriptionSeconds(List<LedgerEntry> entries) {
+        long used = 0;
+        for (LedgerEntry entry : entries) {
+            if (!"TRANSCRIPTION".equals(entry.operation()) || entry.state() == UsageState.RELEASED) continue;
+            used = Math.addExact(used, entry.state() == UsageState.SETTLED && entry.measuredAudioSeconds() != null
+                    ? entry.measuredAudioSeconds() : entry.maximumAudioSeconds());
+        }
+        return used;
+    }
+
     public Map<UUID, LedgerTotals> byMeeting(YearMonth month) {
         Objects.requireNonNull(month, "month");
         Map<UUID, TotalsBuilder> builders = new HashMap<>();
@@ -209,12 +223,7 @@ public class CostLedgerService {
                 throw conflict("MEETING_BUDGET_EXCEEDED", "Meeting AI budget is exhausted");
             }
             if ("TRANSCRIPTION".equals(request.operation())) {
-                long used = 0;
-                for (LedgerEntry entry : previous) {
-                    if (!"TRANSCRIPTION".equals(entry.operation()) || entry.state() == UsageState.RELEASED) continue;
-                    used = Math.addExact(used, entry.state() == UsageState.SETTLED && entry.measuredAudioSeconds() != null
-                            ? entry.measuredAudioSeconds() : entry.maximumAudioSeconds());
-                }
+                long used = transcriptionSeconds(previous);
                 long cap = Math.min(maximumMeetingSeconds, Math.multiplyExact(maxMinutes.longValue(), 60L));
                 if (used > cap || request.maximumAudioSeconds() > cap - used) {
                     throw conflict("MEETING_AUDIO_LIMIT_EXCEEDED", "Meeting transcription time limit is exhausted");

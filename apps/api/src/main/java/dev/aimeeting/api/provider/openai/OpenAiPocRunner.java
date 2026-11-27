@@ -243,7 +243,7 @@ public final class OpenAiPocRunner {
         report.put("status", status);
         report.put("measurementClassification", completed == null ? "PREFLIGHT_ONLY" : "REAL_PROVIDER_MEASUREMENT");
         report.put("goDecision", "NOT_A_GO_DECISION");
-        report.put("model", "gpt-6.1-sol");
+        report.put("model", MeetingAiPayloads.MODEL);
         report.put("priceVersion", preflight.priceVersion());
         report.put("inputBytes", preflight.inputBytes());
         report.put("inputTokenReservation", preflight.limits().maxInputTokens());

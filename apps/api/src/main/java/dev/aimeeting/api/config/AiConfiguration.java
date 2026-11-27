@@ -57,7 +57,9 @@ public final class AiConfiguration {
 
     public boolean enabled() { return properties.paidApiTestsEnabled(); }
 
-    public boolean speechAvailable() { return enabled() && !deepgramApiKey().isBlank(); }
+    public boolean whisperEnabled() { return "whisper".equals(environment.getProperty("AI_SPEECH_PROVIDER", "deepgram")); }
+
+    public boolean speechAvailable() { return whisperEnabled() || (enabled() && !deepgramApiKey().isBlank()); }
 
     public boolean codexEnabled() { return "codex".equals(environment.getProperty("AI_LLM_PROVIDER", "openai")); }
 
@@ -68,6 +70,11 @@ public final class AiConfiguration {
     public boolean llmAvailable() { return codexEnabled() ? !codexBridgeToken().isBlank() : enabled() && !openAiApiKey().isBlank(); }
 
     public int maximumAudioSeconds() { return maximumAudioSeconds; }
+
+    public int transcriptionMaximumSeconds() {
+        return settings == null ? maximumAudioSeconds
+                : Math.min(maximumAudioSeconds, settings.get().perMeetingMaxMinutes() * 60);
+    }
 
     public BigDecimal maximumMeetingUsd() { return settings == null ? maximumMeetingUsd : settings.get().perMeetingBudgetUsd(); }
 

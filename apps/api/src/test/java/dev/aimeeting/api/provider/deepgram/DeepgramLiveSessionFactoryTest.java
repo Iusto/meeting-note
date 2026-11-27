@@ -21,6 +21,33 @@ import org.mockito.MockedStatic;
 import org.springframework.beans.factory.ObjectProvider;
 
 class DeepgramLiveSessionFactoryTest {
+    @Test void reconnectWaitsForTheOldClaimBeforeReadingItsReservedBudget() {
+        Fixture fixture = fixture(new BigDecimal("10.00"), 240);
+        UUID meetingId = UUID.randomUUID();
+        when(fixture.meetings.hasActiveDeepgramSession(meetingId)).thenReturn(true);
+        try (MockedStatic<DeepgramMeetingPoc> provider = mockStatic(DeepgramMeetingPoc.class)) {
+            assertThatThrownBy(() -> fixture.factory.open(meetingId, 2_438_918, ignored -> {}).join())
+                    .hasCauseInstanceOf(dev.aimeeting.api.web.ApiException.class)
+                    .hasMessageContaining("still finalizing");
+            verify(fixture.ledger, never()).totalsForMeeting(any());
+            provider.verifyNoInteractions();
+        }
+    }
+
+    @Test void reconnectReservationUsesTheRemainingCumulativeAudioAllowance() {
+        Fixture fixture = fixture(new BigDecimal("10.00"), 240);
+        UUID meetingId = UUID.randomUUID();
+        when(fixture.ledger.committedTranscriptionSeconds(meetingId)).thenReturn(14_396L);
+        DeepgramMeetingPoc live = mock(DeepgramMeetingPoc.class);
+        try (MockedStatic<DeepgramMeetingPoc> provider = mockStatic(DeepgramMeetingPoc.class)) {
+            provider.when(() -> DeepgramMeetingPoc.openLive(anyString(), any(UUID.class), eq(meetingId), eq(2_438_918L),
+                    eq(true), argThat(limits -> limits.maxDuration().equals(Duration.ofSeconds(4))),
+                    any(), eq(14_400L), anyString(), any(), any(), any(), any(), any()))
+                    .thenReturn(CompletableFuture.completedFuture(live));
+            assertThat(fixture.factory.open(meetingId, 2_438_918L, ignored -> {}).join()).isSameAs(live);
+        }
+    }
+
     @Test void settingsDurationLimitRejectsAReconnectAtTheMeetingBoundary() {
         Fixture fixture = fixture(new BigDecimal("10.00"), 90);
         CompletableFuture<DeepgramMeetingPoc> opening = fixture.factory.open(UUID.randomUUID(), 5_400_000, ignored -> {});
@@ -67,9 +94,10 @@ class DeepgramLiveSessionFactoryTest {
         when(ledger.totalsForMeeting(any())).thenReturn(LedgerTotals.zero());
         ObjectProvider<DeepgramStartupRecovery> recovery = mock(ObjectProvider.class);
         when(recovery.getIfAvailable()).thenReturn(mock(DeepgramStartupRecovery.class));
-        return new Fixture(new DeepgramLiveSessionFactory(configuration, mock(MeetingRepository.class),
-                mock(TopicRepository.class), ledger, settings, recovery));
+        MeetingRepository meetings = mock(MeetingRepository.class);
+        return new Fixture(new DeepgramLiveSessionFactory(configuration, meetings,
+                mock(TopicRepository.class), ledger, settings, recovery), meetings, ledger);
     }
 
-    private record Fixture(DeepgramLiveSessionFactory factory) {}
+    private record Fixture(DeepgramLiveSessionFactory factory, MeetingRepository meetings, CostLedgerService ledger) {}
 }

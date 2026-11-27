@@ -7,7 +7,7 @@
 | 알고 싶은 것 | 읽을 문서 |
 |---|---|
 | 무엇을 만들고 어디까지 구현했는가 | [01 요구사항](01-PRD.md) → [08 개발 계획](08-IMPLEMENTATION-PLAN.md) |
-| 사용자가 어떻게 이용하는가 | [02 사용자 흐름](02-USER-FLOW.md) |
+| PC 재시작 후 실행하고 녹음·업로드·요약·다운로드하는 방법 | [02 사용자 흐름](02-USER-FLOW.md) |
 | 왜 이 구조와 기술을 선택했는가 | [03 아키텍처](03-ARCHITECTURE.md) → [10 기술 결정](10-DECISIONS.md) |
 | 데이터·API·AI 처리는 어떻게 동작하는가 | [04 데이터 모델](04-DATA-MODEL.md) · [05 API 계약](05-API-CONTRACT.md) · [06 AI 파이프라인](06-AI-PIPELINE.md) |
 | 무엇을 검증했고 무엇이 남았는가 | [07 테스트·검증](07-TEST-AND-EVAL.md) |
@@ -17,7 +17,7 @@
 
 - [로컬 실행](../README.md#실행), [개발 환경](../README.md#로컬-개발과-테스트)
 - [배포·백업·복원·평가 도구](../scripts/README.md), [브라우저 테스트](../tests/e2e/README.md)
-- [공식 API 출처](references/12-OFFICIAL-REFERENCES.md): 지원 기능·파라미터·가격의 확인 시점과 링크
+- [공식 출처](references/12-OFFICIAL-REFERENCES.md)에서 Whisper·Docker·Codex와 별도 유료 API의 구현 근거를 확인할 수 있다.
 - [기술 결정의 논의 이력](../HISTORY.md), [변경 이력](../CHANGELOG.md)
 
 ## 문서 관리 기준

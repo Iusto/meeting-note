@@ -140,7 +140,7 @@ public final class DeepgramPocSession implements WebSocket.Listener, AutoCloseab
         ScheduledExecutorService scheduler = newScheduler();
         HttpClient client;
         try {
-            client = HttpClient.newBuilder().executor(executor).build();
+            client = HttpClient.newBuilder().executor(executor).connectTimeout(Duration.ofSeconds(10)).build();
         } catch (RuntimeException exception) {
             scheduler.shutdownNow();
             executor.shutdownNow();
@@ -151,6 +151,7 @@ public final class DeepgramPocSession implements WebSocket.Listener, AutoCloseab
         CompletableFuture<WebSocket> opening;
         try {
             opening = client.newWebSocketBuilder()
+                    .connectTimeout(Duration.ofSeconds(10))
                     .header("Authorization", authorization)
                     .buildAsync(endpoint, session);
         } catch (RuntimeException exception) {

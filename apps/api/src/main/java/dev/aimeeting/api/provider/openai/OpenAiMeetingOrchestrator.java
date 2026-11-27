@@ -5,6 +5,7 @@ import dev.aimeeting.api.correction.CorrectionService;
 import dev.aimeeting.api.correction.CorrectionSuggestion;
 import dev.aimeeting.api.provider.SummaryProvider;
 import dev.aimeeting.api.summary.MeetingSummary;
+import dev.aimeeting.api.summary.SummaryProgress;
 import dev.aimeeting.api.summary.SummaryService;
 import dev.aimeeting.api.topic.GlossaryTerm;
 import dev.aimeeting.api.topic.TopicService;
@@ -21,11 +22,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 
 /** Offline-testable OpenAI workflow; the Spring application service owns paid-mode activation. */
 public final class OpenAiMeetingOrchestrator {
     private static final String PROVIDER = "openai";
-    private static final String MODEL = "gpt-6.1-sol";
 
     @FunctionalInterface
     public interface Transport {
@@ -76,20 +77,46 @@ public final class OpenAiMeetingOrchestrator {
     }
 
     public CompletableFuture<MeetingSummary> generateSummary(UUID requestId, UUID meetingId) {
+        return generateSummary(requestId, meetingId, ignored -> {});
+    }
+
+    public CompletableFuture<MeetingSummary> generateSummary(UUID requestId, UUID meetingId,
+                                                              Consumer<SummaryProgress> progress) {
         SummaryService.AiSnapshot snapshot = summaries.prepareAiGeneration(meetingId);
         List<List<dev.aimeeting.api.meeting.TranscriptSegment>> chunks =
                 MeetingAiPayloads.partitionTranscript(snapshot.transcript());
         AtomicInteger sequence = new AtomicInteger();
+        int chunkCount = chunks.size();
+        int totalSteps = 2 * chunkCount + 1;
+        Consumer<Integer> report = steps -> {
+            var stage = steps == totalSteps ? SummaryProgress.Stage.COMPLETED
+                    : steps == totalSteps - 1 ? SummaryProgress.Stage.SAVING
+                    : steps > chunkCount ? SummaryProgress.Stage.SYNTHESIS : SummaryProgress.Stage.CHUNKS;
+            progress.accept(new SummaryProgress(stage, steps * 100 / totalSteps,
+                    Math.min(steps - 1, chunkCount), chunkCount));
+        };
+        AtomicInteger completed = new AtomicInteger(1);
+        report.accept(1);
         CompletableFuture<List<SummaryProvider.Summary>> partials = requestSummary(requestId,
                 sequence.getAndIncrement(), meetingId, "SUMMARY_CHUNK", chunks.getFirst(), chunks.getFirst())
-                .thenApply(List::of);
+                .thenApply(summary -> {
+                    report.accept(completed.incrementAndGet());
+                    return List.of(summary);
+                });
         for (List<dev.aimeeting.api.meeting.TranscriptSegment> chunk : chunks.subList(1, chunks.size())) {
             partials = partials.thenCompose(current -> requestSummary(requestId, sequence.getAndIncrement(), meetingId,
-                    "SUMMARY_CHUNK", chunk, chunk).thenApply(summary -> append(current, summary)));
+                    "SUMMARY_CHUNK", chunk, chunk).thenApply(summary -> {
+                        report.accept(completed.incrementAndGet());
+                        return append(current, summary);
+                    }));
         }
         return partials.thenCompose(current -> reduceSummaries(requestId, sequence, meetingId,
-                        snapshot.transcript(), current))
-                .thenApply(summary -> summaries.storeAiGenerated(snapshot, summary, subscription ? "CODEX" : "OPENAI"));
+                        snapshot.transcript(), current, () -> report.accept(completed.incrementAndGet())))
+                .thenApply(summary -> {
+                    MeetingSummary saved = summaries.storeAiGenerated(snapshot, summary, subscription ? "CODEX" : "OPENAI");
+                    report.accept(completed.incrementAndGet());
+                    return saved;
+                });
     }
 
     public CompletableFuture<List<CorrectionSuggestion>> generateCorrections(UUID requestId, UUID meetingId) {
@@ -115,7 +142,7 @@ public final class OpenAiMeetingOrchestrator {
                 limits.maxOutputTokens());
         OpenAiPocClient.validateRequest(payload, limits);
         if (!subscription) {
-            ledger.reserve(requestId, new ReservationRequest(null, PROVIDER, MODEL, "GLOSSARY", priceVersion,
+            ledger.reserve(requestId, new ReservationRequest(null, PROVIDER, MeetingAiPayloads.MODEL, "GLOSSARY", priceVersion,
                     limits.maximumEstimatedUsd(), 1, topicId));
             ledger.startDispatch(requestId);
         }
@@ -153,7 +180,7 @@ public final class OpenAiMeetingOrchestrator {
 
     private CompletableFuture<SummaryProvider.Summary> reduceSummaries(UUID rootRequestId, AtomicInteger sequence,
             UUID meetingId, List<dev.aimeeting.api.meeting.TranscriptSegment> evidence,
-            List<SummaryProvider.Summary> initial) {
+            List<SummaryProvider.Summary> initial, Runnable onMerged) {
         if (initial.size() == 1) return CompletableFuture.completedFuture(initial.getFirst());
         List<List<SummaryProvider.Summary>> pairs = new ArrayList<>();
         for (int index = 0; index < initial.size(); index += 2) {
@@ -171,11 +198,13 @@ public final class OpenAiMeetingOrchestrator {
                 preflightAndClaim(child, meetingId, "SUMMARY_REDUCE", audioSeconds(evidence), payload);
                 return dispatch(child, payload).thenApply(response -> {
                     requireCompleted(response);
-                    return append(current, MeetingAiPayloads.parseSummary(response.outputJson(), evidence));
+                    var summary = MeetingAiPayloads.parseSummary(response.outputJson(), evidence);
+                    onMerged.run();
+                    return append(current, summary);
                 });
             });
         }
-        return next.thenCompose(reduced -> reduceSummaries(rootRequestId, sequence, meetingId, evidence, reduced));
+        return next.thenCompose(reduced -> reduceSummaries(rootRequestId, sequence, meetingId, evidence, reduced, onMerged));
     }
 
     private void preflightAndClaim(UUID requestId, UUID meetingId, String operation, long audioSeconds,
@@ -187,7 +216,7 @@ public final class OpenAiMeetingOrchestrator {
     private void claim(UUID requestId, UUID meetingId, String operation, long audioSeconds) {
         Objects.requireNonNull(requestId, "requestId");
         if (subscription) return;
-        ledger.reserveBounded(requestId, new ReservationRequest(meetingId, PROVIDER, MODEL, operation, priceVersion,
+        ledger.reserveBounded(requestId, new ReservationRequest(meetingId, PROVIDER, MeetingAiPayloads.MODEL, operation, priceVersion,
                 limits.maximumEstimatedUsd(), 1), maximumMeetingUsd, maximumMeetingSeconds);
         ledger.startDispatch(requestId);
     }

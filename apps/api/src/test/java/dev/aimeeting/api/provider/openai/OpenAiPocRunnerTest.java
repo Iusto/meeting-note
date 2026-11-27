@@ -234,7 +234,7 @@ class OpenAiPocRunnerTest {
         }, (key, payload, limits) -> {
             dispatches.incrementAndGet();
             assertThat(key).isEqualTo("test-openai-key");
-            assertThat(payload.path("model").asText()).isEqualTo("gpt-6.1-sol");
+            assertThat(payload.path("model").asText()).isEqualTo("gpt-6.2-sol");
             assertThat(payload.path("store").asBoolean()).isFalse();
             assertThat(payload.path("service_tier").asText()).isEqualTo("default");
             assertThat(payload.at("/reasoning/effort").asText()).isEqualTo("low");

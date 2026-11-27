@@ -4,6 +4,7 @@ import dev.aimeeting.api.config.AiConfiguration;
 import dev.aimeeting.api.correction.CorrectionService;
 import dev.aimeeting.api.correction.CorrectionSuggestion;
 import dev.aimeeting.api.summary.MeetingSummary;
+import dev.aimeeting.api.summary.SummaryProgress;
 import dev.aimeeting.api.summary.SummaryService;
 import dev.aimeeting.api.topic.GlossaryTerm;
 import dev.aimeeting.api.topic.TopicService;
@@ -13,6 +14,7 @@ import java.time.Duration;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.function.Supplier;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -26,6 +28,7 @@ public class MeetingAiApplicationService {
     private final AiConfiguration configuration;
     private final Supplier<OpenAiMeetingOrchestrator> orchestrator;
     private final Semaphore concurrency = new Semaphore(1);
+    private final ConcurrentHashMap<UUID, SummaryProgress> summaryProgress = new ConcurrentHashMap<>();
 
     @Autowired
     public MeetingAiApplicationService(AiConfiguration configuration, CostLedgerService ledger,
@@ -56,7 +59,21 @@ public class MeetingAiApplicationService {
     public boolean enabled() { return configuration.enabled() || configuration.codexEnabled(); }
 
     public CompletableFuture<MeetingSummary> generateSummary(UUID meetingId) {
-        return bounded(() -> orchestrator.get().generateSummary(UUID.randomUUID(), meetingId));
+        return bounded(() -> {
+            summaryProgress.put(meetingId, SummaryProgress.PREPARING);
+            try {
+                return orchestrator.get().generateSummary(UUID.randomUUID(), meetingId,
+                        progress -> summaryProgress.put(meetingId, progress))
+                        .whenComplete((result, failure) -> summaryProgress.remove(meetingId));
+            } catch (RuntimeException failure) {
+                summaryProgress.remove(meetingId);
+                throw failure;
+            }
+        });
+    }
+
+    public SummaryProgress summaryProgress(UUID meetingId) {
+        return summaryProgress.getOrDefault(meetingId, SummaryProgress.IDLE);
     }
 
     public CompletableFuture<List<CorrectionSuggestion>> generateCorrections(UUID meetingId) {

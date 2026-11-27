@@ -12,6 +12,7 @@ import dev.aimeeting.api.provider.SpeechProvider;
 import dev.aimeeting.api.provider.deepgram.DeepgramLiveSessionFactory;
 import dev.aimeeting.api.provider.deepgram.DeepgramMeetingPoc;
 import java.net.URI;
+import java.io.IOException;
 import java.nio.file.Path;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -31,6 +32,67 @@ import org.springframework.web.socket.WebSocketSession;
 
 class LiveWebSocketLogoutTest {
     @Test
+    void halfOpenRecorderExpiresWhileViewersAndMeetingStayAliveAndCleanupIsRetryable() throws Exception {
+        AppProperties properties = new AppProperties("a-valid-owner-token-000000000000", List.of(), Path.of("target"), false, 100);
+        SessionService auth = sessionService(properties);
+        String authId = auth.login("a-valid-owner-token-000000000000");
+        UUID meetingId = UUID.randomUUID();
+        MeetingRepository meetings = mock(MeetingRepository.class);
+        SpeechProvider provider = mock(SpeechProvider.class);
+        DeepgramLiveSessionFactory deepgram = mock(DeepgramLiveSessionFactory.class);
+        DeepgramMeetingPoc live = mock(DeepgramMeetingPoc.class);
+        var completion = new CompletableFuture<dev.aimeeting.api.provider.deepgram.DeepgramPocSession.StopReason>();
+        when(meetings.find(meetingId)).thenReturn(new Meeting(meetingId, "live", "STARTED", "LIVE", null, null, null, 1));
+        when(live.streamSessionId()).thenReturn(UUID.randomUUID());
+        when(live.outcome()).thenReturn(completion.thenApply(reason -> new dev.aimeeting.api.provider.LiveSpeechSession.Outcome(reason.name(), true)));
+        when(live.finish()).thenReturn(completion);
+        when(live.sendAudio(any())).thenReturn(CompletableFuture.completedFuture(null));
+        when(deepgram.open(eq(meetingId), anyLong(), any())).thenReturn(CompletableFuture.completedFuture(live));
+        var now = new java.util.concurrent.atomic.AtomicLong();
+        LiveWebSocketHandler handler = new LiveWebSocketHandler(meetings, provider, deepgram, new ObjectMapper(), auth, now::get);
+        try {
+            WebSocketSession recorder = socket(authId, meetingId, false);
+            WebSocketSession viewer = watchSocket(authId, meetingId);
+            handler.afterConnectionEstablished(viewer);
+            handler.afterConnectionEstablished(recorder);
+            now.set(TimeUnit.SECONDS.toNanos(19));
+            handler.handleBinaryMessage(recorder, new BinaryMessage(new byte[] {1, 0}));
+            now.set(TimeUnit.SECONDS.toNanos(30));
+            handler.expireIdleAudioConnections();
+            verify(live, never()).finish();
+            handler.handleTextMessage(recorder, new TextMessage("{\"type\":\"stream.ping\"}"));
+            verify(recorder).sendMessage(argThat(message -> message.getPayload().toString().contains("stream.pong")));
+            now.set(TimeUnit.SECONDS.toNanos(40));
+            handler.expireIdleAudioConnections();
+            handler.expireIdleAudioConnections();
+            verify(live, times(1)).finish();
+            verify(live, never()).close();
+            verify(recorder).sendMessage(argThat(message -> message.getPayload().toString().contains("stream.retry")));
+            verify(viewer, never()).close(any());
+            verify(meetings, never()).stop(any());
+
+            when(deepgram.open(eq(meetingId), anyLong(), any())).thenReturn(CompletableFuture.failedFuture(
+                    new dev.aimeeting.api.web.ApiException(org.springframework.http.HttpStatus.CONFLICT,
+                            "TRANSCRIPTION_RECOVERING", "still finalizing")));
+            WebSocketSession retry = socket(authId, meetingId, true);
+            handler.afterConnectionEstablished(retry);
+            verify(retry).sendMessage(argThat(message -> message.getPayload().toString().contains("stream.retry")));
+            verify(retry, never()).sendMessage(argThat(message -> message.getPayload().toString().contains("stream.error")));
+            completion.complete(dev.aimeeting.api.provider.deepgram.DeepgramPocSession.StopReason.COMPLETED);
+            DeepgramMeetingPoc next = mock(DeepgramMeetingPoc.class);
+            when(next.streamSessionId()).thenReturn(UUID.randomUUID());
+            when(next.outcome()).thenReturn(new CompletableFuture<>());
+            when(next.sendAudio(any())).thenReturn(CompletableFuture.completedFuture(null));
+            when(deepgram.open(eq(meetingId), anyLong(), any())).thenReturn(CompletableFuture.completedFuture(next));
+            WebSocketSession reconnected = socket(authId, meetingId, true);
+            handler.afterConnectionEstablished(reconnected);
+            verify(reconnected).sendMessage(argThat(message -> message.getPayload().toString().contains("session.ready")));
+            handler.handleBinaryMessage(reconnected, new BinaryMessage(new byte[] {2, 0}));
+            verify(next).sendAudio(new byte[] {2, 0});
+        } finally { handler.shutdownWatchers(); }
+    }
+
+    @Test
     void viewersReceiveProducerEventsAndEditsWithoutOpeningProvidersOrStoppingRecording() throws Exception {
         AppProperties properties = new AppProperties("a-valid-owner-token-000000000000", List.of(), Path.of("target"), false, 100);
         SessionService auth = sessionService(properties);
@@ -45,7 +107,7 @@ class LiveWebSocketLogoutTest {
         when(meetings.find(meetingId)).thenReturn(new Meeting(meetingId, "live", "STARTED", "LIVE", null, null, null, 1));
         when(meetings.find(otherId)).thenReturn(new Meeting(otherId, "other", "STOPPED", "LIVE", null, null, null, 1));
         when(live.streamSessionId()).thenReturn(UUID.randomUUID());
-        when(live.completion()).thenReturn(new CompletableFuture<>());
+        when(live.outcome()).thenReturn(new CompletableFuture<>());
         var emit = new java.util.concurrent.atomic.AtomicReference<java.util.function.Consumer<dev.aimeeting.api.provider.SpeechEvent>>();
         when(deepgram.open(eq(meetingId), eq(0L), any())).thenAnswer(call -> {
             emit.set(call.getArgument(2));
@@ -131,7 +193,7 @@ class LiveWebSocketLogoutTest {
         DeepgramMeetingPoc live = mock(DeepgramMeetingPoc.class);
         when(meetings.find(meetingId)).thenReturn(new Meeting(meetingId, "live", "STARTED", "LIVE", null, null, null, 1));
         when(live.streamSessionId()).thenReturn(UUID.randomUUID());
-        when(live.completion()).thenReturn(new CompletableFuture<>());
+        when(live.outcome()).thenReturn(new CompletableFuture<>());
         when(live.sendAudio(any())).thenReturn(CompletableFuture.completedFuture(null));
         when(live.finish()).thenReturn(new CompletableFuture<>());
         when(deepgram.open(eq(meetingId), eq(1_250L), any())).thenReturn(CompletableFuture.completedFuture(live));
@@ -140,6 +202,7 @@ class LiveWebSocketLogoutTest {
 
         handler.afterConnectionEstablished(socket);
         handler.handleBinaryMessage(socket, new BinaryMessage(new byte[] {1, 0, 2, 0}));
+        handler.handleTransportError(socket, new IOException("synthetic network interruption"));
         handler.afterConnectionClosed(socket, CloseStatus.NORMAL);
 
         verify(live).sendAudio(new byte[] {1, 0, 2, 0});
@@ -211,7 +274,7 @@ class LiveWebSocketLogoutTest {
         DeepgramMeetingPoc live = mock(DeepgramMeetingPoc.class);
         when(meetings.find(meetingId)).thenReturn(new Meeting(meetingId, "live", "STARTED", "LIVE", null, null, null, 1));
         when(live.streamSessionId()).thenReturn(UUID.randomUUID());
-        when(live.completion()).thenReturn(new CompletableFuture<>());
+        when(live.outcome()).thenReturn(new CompletableFuture<>());
         when(deepgram.open(eq(meetingId), eq(0L), any())).thenReturn(CompletableFuture.completedFuture(live));
         LiveWebSocketHandler handler = new LiveWebSocketHandler(meetings, provider, deepgram, new ObjectMapper(), auth);
         WebSocketSession socket = socket(authSessionId, meetingId, false);

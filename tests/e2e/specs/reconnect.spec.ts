@@ -31,6 +31,44 @@ async function start(page: Page, name = '마이크 녹음 시작') {
   await page.getByRole('button', { name, exact: true }).click()
 }
 
+test('recovers a half-open AI socket and retries while its old session finalizes without stopping recording', async ({ page }) => {
+  const { uploads } = await mockMeeting(page, 'LIVE')
+  let connections = 0
+  const offsets: number[] = []
+  await page.routeWebSocket('**/api/v1/meetings/synthetic/live?audioOffsetMs=*', socket => {
+    connections++
+    offsets.push(Number(new URL(socket.url()).searchParams.get('audioOffsetMs')))
+    if (connections === 1) {
+      // The browser still sees OPEN, but traffic/replies vanish during an outage.
+      socket.send(JSON.stringify({ type: 'session.ready', meetingId: 'synthetic', streamSessionId: 'old' }))
+    } else if (connections === 2) {
+      socket.send(JSON.stringify({ type: 'stream.retry', meetingId: 'synthetic', message: '이전 연결 정리 중' }))
+      socket.close()
+    } else {
+      socket.send(JSON.stringify({ type: 'session.ready', meetingId: 'synthetic', streamSessionId: 'recovered' }))
+      socket.onMessage(message => {
+        if (typeof message === 'string' && message.includes('stream.ping')) {
+          socket.send(JSON.stringify({ type: 'stream.pong', meetingId: 'synthetic' }))
+        } else if (typeof message === 'string' && message.includes('stream.stop')) {
+          socket.send(JSON.stringify({ type: 'stream.stopped', meetingId: 'synthetic' }))
+          socket.close()
+        }
+      })
+    }
+  })
+  await page.goto('/meetings/synthetic/live')
+  await start(page)
+  await expect(page.getByText('실시간 AI 연결됨', { exact: true })).toBeVisible()
+  await expect.poll(() => connections, { timeout: 22_000 }).toBe(3)
+  await expect(page.getByText('실시간 AI 연결됨', { exact: true })).toBeVisible()
+  expect(offsets[1]).toBeGreaterThan(offsets[0])
+  expect(offsets[2]).toBeGreaterThan(offsets[1])
+  await expect(page.getByLabel('전사 누락 구간')).toBeVisible()
+  const count = uploads.length
+  await expect.poll(() => uploads.length, { timeout: 5_000 }).toBeGreaterThan(count)
+  await page.getByRole('button', { name: '녹음 종료 및 저장' }).click()
+})
+
 test('retries AI after budget failure while recording keeps uploading', async ({ page }) => {
   const { uploads } = await mockMeeting(page, 'LIVE')
   let connections = 0

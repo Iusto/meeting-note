@@ -26,6 +26,11 @@ server {
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection $connection_upgrade;
     proxy_read_timeout 3600s;
+    location = /api/v1/meetings/import {
+      proxy_pass http://api:8080;
+      client_max_body_size 256m;
+      proxy_request_buffering off;
+    }
   }
 
   location / {

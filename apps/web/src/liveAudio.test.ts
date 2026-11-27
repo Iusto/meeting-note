@@ -18,6 +18,103 @@ class FakeSocket {
 }
 
 describe('LivePcmTransport', () => {
+  it('replaces an OPEN but unresponsive socket after an outage without replaying audio', () => {
+    let now = 0
+    const sockets: FakeSocket[] = []
+    const offsets: number[] = []
+    const scheduled: (() => void)[] = []
+    const dropped = vi.fn()
+    const transport = new LivePcmTransport({
+      meetingId: 'meeting', now: () => now, socketUrl: (_, offset) => { offsets.push(offset); return 'ws://live' },
+      onEvent: vi.fn(), onDropped: dropped,
+      createSocket: () => { const socket = new FakeSocket(); sockets.push(socket); return socket },
+      schedule: callback => { scheduled.push(callback); return scheduled.length }, cancelSchedule: vi.fn(),
+    })
+    transport.start()
+    sockets[0].message({ type: 'session.ready', meetingId: 'meeting' })
+    transport.accept(new Int16Array(1_600))
+    now = 5_000
+    transport.accept(new Int16Array(1_600))
+    expect(sockets[0].sent).toContain(JSON.stringify({ type: 'stream.ping' }))
+    now = 15_000
+    transport.accept(new Int16Array(1_600))
+    expect(sockets[0].readyState).toBe(3)
+    scheduled.shift()?.()
+    sockets[1].message({ type: 'session.ready', meetingId: 'meeting' })
+    transport.accept(new Int16Array(1_600).fill(7))
+    expect(offsets).toEqual([0, 300])
+    expect(dropped).toHaveBeenCalledWith({ startMs: 200, endMs: 300, reason: 'disconnected' })
+    expect(new Int16Array(sockets[1].sent[0] as ArrayBuffer)[0]).toBe(7)
+  })
+
+  it('keeps a silent but responsive stream alive and waits for previous-session cleanup', () => {
+    let now = 0
+    const sockets: FakeSocket[] = []
+    const scheduled: (() => void)[] = []
+    const onEvent = vi.fn()
+    const transport = new LivePcmTransport({
+      meetingId: 'meeting', now: () => now, socketUrl: () => 'ws://live', onEvent, onDropped: vi.fn(),
+      createSocket: () => { const socket = new FakeSocket(); sockets.push(socket); return socket },
+      schedule: callback => { scheduled.push(callback); return scheduled.length }, cancelSchedule: vi.fn(),
+    })
+    transport.start()
+    sockets[0].message({ type: 'session.ready', meetingId: 'meeting' })
+    for (now = 5_000; now <= 30_000; now += 5_000) {
+      transport.accept(new Int16Array(1_600))
+      sockets[0].message({ type: 'stream.pong', meetingId: 'meeting' })
+    }
+    expect(sockets).toHaveLength(1)
+    expect(onEvent).toHaveBeenCalledTimes(1)
+    sockets[0].disconnected()
+    scheduled.shift()?.()
+    sockets[1].message({ type: 'stream.retry', meetingId: 'meeting' })
+    expect(sockets[1].readyState).toBe(3)
+    scheduled.shift()?.()
+    sockets[2].message({ type: 'session.ready', meetingId: 'meeting' })
+    transport.accept(new Int16Array(1_600))
+    expect(sockets[2].sent[0]).toBeInstanceOf(ArrayBuffer)
+  })
+
+  it('bounds automatic retries', async () => {
+    const sockets: FakeSocket[] = []
+    const callbacks = new Map<number, () => void>()
+    let timerId = 0
+    const onEvent = vi.fn()
+    const transport = new LivePcmTransport({
+      meetingId: 'meeting', socketUrl: () => 'ws://live', onEvent, onDropped: vi.fn(),
+      createSocket: () => { const socket = new FakeSocket(); sockets.push(socket); return socket },
+      schedule: callback => { callbacks.set(++timerId, callback); return timerId },
+      cancelSchedule: id => { callbacks.delete(id) },
+    })
+    transport.start()
+    for (let attempt = 0; attempt <= 12; attempt++) {
+      sockets.at(-1)!.message({ type: 'stream.retry', meetingId: 'meeting' })
+      const next = callbacks.entries().next().value
+      if (next) { callbacks.delete(next[0]); next[1]() }
+    }
+    expect(sockets).toHaveLength(13)
+    expect(onEvent).toHaveBeenLastCalledWith(expect.objectContaining({ type: 'stream.error' }))
+    expect(callbacks.size).toBe(0)
+    await transport.stop()
+    expect(callbacks.size).toBe(0)
+  })
+
+  it('cancels a pending cleanup retry when recording stops', async () => {
+    const socket = new FakeSocket()
+    const schedule = vi.fn(() => 7)
+    const cancelSchedule = vi.fn()
+    const createSocket = vi.fn(() => socket)
+    const transport = new LivePcmTransport({
+      meetingId: 'meeting', socketUrl: () => 'ws://live', onEvent: vi.fn(), onDropped: vi.fn(),
+      createSocket, schedule, cancelSchedule,
+    })
+    transport.start()
+    socket.message({ type: 'stream.retry', meetingId: 'meeting' })
+    await transport.stop()
+    expect(cancelSchedule).toHaveBeenCalledWith(7)
+    expect(createSocket).toHaveBeenCalledTimes(1)
+  })
+
   it('reconnects from the current capture offset without replaying already-sent audio', () => {
     const sockets: FakeSocket[] = []
     const urls: string[] = []

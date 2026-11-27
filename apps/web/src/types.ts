@@ -5,7 +5,7 @@ export interface Meeting {
   title: string
   revision: number
   status: MeetingStatus
-  inputSource?: 'MOCK' | 'LOCAL_RECORDING' | 'LIVE'
+  inputSource?: 'MOCK' | 'LOCAL_RECORDING' | 'LIVE' | 'IMPORTED_RECORDING'
   topicId?: string | null
   createdAt?: string
   startedAt?: string | null
@@ -15,10 +15,16 @@ export interface Meeting {
 export interface AiConfiguration {
   enabled: boolean
   speechAvailable: boolean
+  speechProvider?: 'WHISPER' | 'DEEPGRAM'
   llmProvider?: 'CODEX' | 'OPENAI'
   llmAvailable: boolean
   maximumAudioSeconds: number
   maximumMeetingUsd: number
+}
+
+export interface RecordingImportStatus {
+  state: 'QUEUED' | 'TRANSCRIBING' | 'TRANSCRIPTION_FAILED' | 'SUMMARY_QUEUED' | 'SUMMARIZING' | 'SUMMARY_FAILED' | 'COMPLETED'
+  error: string | null
 }
 
 export type TranscriptStatus =
@@ -56,6 +62,8 @@ export type LiveEventType =
   | 'stream.stopped'
   | 'stream.warning'
   | 'stream.error'
+  | 'stream.retry'
+  | 'stream.pong'
 
 export interface LiveEvent {
   type: LiveEventType

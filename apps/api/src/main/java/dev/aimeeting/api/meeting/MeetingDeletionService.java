@@ -40,6 +40,9 @@ public class MeetingDeletionService {
                 if ("STARTED".equals(meeting.status()) || meeting.id().equals(activeMeetingId)) {
                     throw new ApiException(HttpStatus.CONFLICT, "MEETING_ACTIVE", "Active meetings cannot be deleted");
                 }
+                if (meetings.hasRunningRecordingImport(meetingId)) {
+                    throw new ApiException(HttpStatus.CONFLICT, "RECORDING_IMPORT_ACTIVE", "녹음 파일 처리가 끝난 뒤 삭제할 수 있습니다.");
+                }
                 try {
                     quarantined[0] = storage.quarantine(meetingId);
                 } catch (IOException exception) {

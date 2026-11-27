@@ -65,6 +65,10 @@ public class RecordingController {
         String extension = switch ((mediaType.getType() + "/" + mediaType.getSubtype()).toLowerCase(Locale.ROOT)) {
             case "audio/webm" -> "webm";
             case "audio/ogg" -> "ogg";
+            case "audio/mp4" -> "m4a";
+            case "audio/mpeg" -> "mp3";
+            case "audio/wav" -> "wav";
+            case "audio/flac" -> "flac";
             default -> "bin";
         };
         return ResponseEntity.ok()

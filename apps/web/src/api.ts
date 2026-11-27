@@ -1,4 +1,4 @@
-import type { AiConfiguration, Meeting, TranscriptSegment } from './types'
+import type { AiConfiguration, Meeting, RecordingImportStatus, TranscriptSegment } from './types'
 import type { RecordingChunk } from './recordingStore'
 
 export interface SavedRecording {
@@ -71,6 +71,15 @@ export const api = {
   getAiConfiguration: () => request<AiConfiguration>('/ai/configuration'),
   createMeeting: (title: string, inputSource: 'MOCK' | 'LOCAL_RECORDING' | 'LIVE' = 'MOCK', topicId?: string) =>
     request<Meeting>('/meetings', { method: 'POST', body: JSON.stringify({ title, inputSource, topicId: topicId || null }) }),
+  importRecording: (title: string, topicId: string, file: File) => {
+    const query = new URLSearchParams({ title, format: file.name.split('.').at(-1) ?? '' })
+    if (topicId) query.set('topicId', topicId)
+    return request<Meeting>(`/meetings/import?${query}`, {
+      method: 'POST', body: file, headers: { 'Content-Type': 'application/octet-stream' },
+    })
+  },
+  recordingImport: (id: string) => request<RecordingImportStatus>(`/meetings/${id}/import`, { cache: 'no-store' }),
+  retryRecordingImport: (id: string) => request<RecordingImportStatus>(`/meetings/${id}/import/retry`, { method: 'POST' }),
   getMeeting: (meetingId: string) => request<Meeting>(`/meetings/${meetingId}`),
   startMeeting: (meetingId: string) =>
     request<Meeting>(`/meetings/${meetingId}/start`, { method: 'POST' }),

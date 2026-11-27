@@ -1,11 +1,11 @@
 [CmdletBinding()]
-param([switch]$EnablePaidAi, [switch]$OpenMeeting, [switch]$UseOpenAiApi)
+param([Alias('EnablePaidAi')][switch]$EnableAi, [switch]$OpenMeeting)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $savedEnvironment = @{}
 foreach ($name in @('PAID_API_TESTS_ENABLED', 'DEEPGRAM_API_KEY', 'OPENAI_API_KEY',
-        'TAILSCALE_HOST', 'WEB_PORT', 'APP_OWNER_TOKEN', 'POSTGRES_PASSWORD', 'AI_LLM_PROVIDER', 'CODEX_BRIDGE_TOKEN')) {
+        'TAILSCALE_HOST', 'WEB_PORT', 'APP_OWNER_TOKEN', 'POSTGRES_PASSWORD', 'AI_LLM_PROVIDER', 'AI_SPEECH_PROVIDER', 'CODEX_BRIDGE_TOKEN')) {
     $savedEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 
@@ -18,30 +18,6 @@ function New-LocalSecret {
 
 Push-Location $projectRoot
 try {
-    $deepgramKey = ''
-    $openAiKey = ''
-    $env:AI_LLM_PROVIDER = 'openai'
-    $env:CODEX_BRIDGE_TOKEN = ''
-    if ($EnablePaidAi) {
-        $deepgramKey = [string]$savedEnvironment['DEEPGRAM_API_KEY']
-        if ([string]::IsNullOrWhiteSpace($deepgramKey)) {
-            $deepgramKey = [string][Environment]::GetEnvironmentVariable('DEEPGRAM_API_KEY', 'User')
-        }
-        if ([string]::IsNullOrWhiteSpace($deepgramKey)) {
-            throw 'Live transcription requires DEEPGRAM_API_KEY in the process or Windows user environment.'
-        }
-        if ($UseOpenAiApi) {
-            $openAiKey = [string]$savedEnvironment['OPENAI_API_KEY']
-            if ([string]::IsNullOrWhiteSpace($openAiKey)) {
-                $openAiKey = [string][Environment]::GetEnvironmentVariable('OPENAI_API_KEY', 'User')
-            }
-            if ([string]::IsNullOrWhiteSpace($openAiKey)) { throw 'OpenAI API mode requires OPENAI_API_KEY.' }
-            $env:AI_LLM_PROVIDER = 'openai'
-        } else {
-            & (Join-Path $PSScriptRoot 'start-codex-bridge.ps1')
-        }
-    }
-
     $docker = (Get-Command docker -ErrorAction Stop).Source
     $tailscale = Get-Command tailscale -ErrorAction SilentlyContinue
     if ($tailscale) { $tailscale = $tailscale.Source }
@@ -80,18 +56,30 @@ try {
     if ($port -lt 1 -or $port -gt 65535) { throw 'WEB_PORT must be between 1 and 65535.' }
 
     # Process overrides defeat values inherited from .env; restore them on exit.
-    $env:PAID_API_TESTS_ENABLED = if ($EnablePaidAi) { 'true' } else { 'false' }
-    $env:DEEPGRAM_API_KEY = if ($EnablePaidAi) { $deepgramKey } else { '' }
-    $env:OPENAI_API_KEY = if ($EnablePaidAi) { $openAiKey } else { '' }
+    $env:PAID_API_TESTS_ENABLED = 'false'
+    $env:DEEPGRAM_API_KEY = ''
+    $env:OPENAI_API_KEY = ''
+    $env:AI_LLM_PROVIDER = 'openai'
+    $env:AI_SPEECH_PROVIDER = if ($EnableAi) { 'whisper' } else { 'deepgram' }
+    $env:CODEX_BRIDGE_TOKEN = ''
+    if ($EnableAi) {
+        & (Join-Path $PSScriptRoot 'start-codex-bridge.ps1')
+    }
     $env:TAILSCALE_HOST = $hostname
     $env:WEB_PORT = [string]$port
     # Use the project's secrets rather than unrelated inherited shell values.
     [Environment]::SetEnvironmentVariable('APP_OWNER_TOKEN', $null, 'Process')
     [Environment]::SetEnvironmentVariable('POSTGRES_PASSWORD', $null, 'Process')
     $compose = @('compose', '--env-file', $envFile, '-f', 'compose.yaml', '-f', 'compose.tailscale.yaml')
+    $waitSeconds = 180
+    if ($EnableAi) {
+        $compose += @('-f', 'compose.whisper.yaml')
+        $waitSeconds = 900
+        Write-Host 'Starting Whisper large-v3 on the local NVIDIA GPU. The first start downloads the model.'
+    }
     & $docker @compose config --quiet
     if ($LASTEXITCODE -ne 0) { throw 'Compose configuration validation failed.' }
-    & $docker @compose up -d --build --wait --wait-timeout 180
+    & $docker @compose up -d --build --wait --wait-timeout $waitSeconds
     if ($LASTEXITCODE -ne 0) { throw 'Compose startup failed. Containers and data are retained for diagnosis.' }
 
     $apiReady = $false
@@ -116,13 +104,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Could not read container status.' }
     Write-Host "Address: https://$hostname"
     Write-Host 'Login token: APP_OWNER_TOKEN in the project .env file. Do not paste it into chat.'
-    if ($EnablePaidAi) {
-        Write-Host 'Verify login, AI availability, and microphone access from another device on your tailnet.'
+    if ($EnableAi) {
+        Write-Host 'Verify login and try local Whisper transcription or upload a recording from another device on your tailnet.'
     } else {
         Write-Host 'Verify login and microphone access from another device on your tailnet. Paid APIs remain disabled.'
     }
     if ($OpenMeeting) {
-        Write-Host 'Before recording: sign in, check /usage for remaining monthly and meeting budgets, then select LIVE and your microphone.'
+        Write-Host 'Sign in, then select local AI transcription or upload a recording.'
         Write-Host 'Opening this page does not start recording or make a paid provider request.'
         Start-Process "https://$hostname/meetings/new"
     }

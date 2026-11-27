@@ -168,7 +168,7 @@ public final class OpenAiPocClient {
     private static byte[] requestBytes(ObjectNode supplied, OpenAiPocLimits limits) {
         Objects.requireNonNull(supplied);
         ObjectNode payload = supplied.deepCopy();
-        if (!"gpt-6.1-sol".equals(payload.path("model").asText())
+        if (!MeetingAiPayloads.MODEL.equals(payload.path("model").asText())
                 || !payload.has("store") || !payload.get("store").isBoolean() || payload.get("store").booleanValue()
                 || !"default".equals(payload.path("service_tier").asText())
                 || !"low".equals(payload.path("reasoning").path("effort").asText())

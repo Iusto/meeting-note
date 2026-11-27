@@ -8,6 +8,9 @@ const { promisify } = require('node:util');
 const run = promisify(execFile);
 const runtime = path.resolve(__dirname, '../.omx/codex-bridge');
 const MAX_BYTES = 1024 * 1024;
+const MODEL = 'gpt-6.2-sol';
+// The previous API image can still send this model ID while Compose replaces it.
+const SUPPORTED_REQUEST_MODELS = new Set([MODEL, 'gpt-6.1-sol']);
 const { readUsage } = require('./codex-usage.cjs');
 
 function childEnvironment() {
@@ -21,7 +24,7 @@ function childEnvironment() {
 function failure(code, status = 502) { return Object.assign(new Error(code), { code, status }); }
 
 async function generate(payload, cli, signal) {
-  if (payload.model !== 'gpt-6.1-sol' || !payload.text?.format?.schema || !Array.isArray(payload.input)
+  if (!SUPPORTED_REQUEST_MODELS.has(payload.model) || !payload.text?.format?.schema || !Array.isArray(payload.input)
       || typeof payload.instructions !== 'string') throw failure('CODEX_INVALID_REQUEST', 400);
   const env = childEnvironment();
   const auth = await run(process.execPath, [cli, 'login', 'status'], { env, windowsHide: true, timeout: 10000 });
@@ -33,7 +36,7 @@ async function generate(payload, cli, signal) {
     const output = path.join(dir, 'result.json');
     await fs.writeFile(schema, JSON.stringify(payload.text.format.schema));
     const args = [cli, 'exec', '--ignore-user-config', '--ephemeral', '--skip-git-repo-check',
-      '--sandbox', 'read-only', '--model', 'gpt-6.1-sol', '--color', 'never',
+      '--sandbox', 'read-only', '--model', MODEL, '--color', 'never',
       '--disable', 'shell_tool', '--disable', 'unified_exec', '--disable', 'multi_agent',
       '--disable', 'image_generation', '--disable', 'view_image',
       '-c', 'forced_login_method="chatgpt"', '-c', 'approval_policy="never"',
@@ -82,7 +85,7 @@ function createBridge({ token, cli, execute = generate }) {
     const authorization = Buffer.from(req.headers.authorization || '');
     const expected = Buffer.from(`Bearer ${token}`);
     if (authorization.length !== expected.length || !crypto.timingSafeEqual(authorization, expected)) return send(401, { code: 'UNAUTHORIZED' });
-    if (req.method === 'GET' && req.url === '/health') return send(200, { status: 'UP', provider: 'CODEX' });
+    if (req.method === 'GET' && req.url === '/health') return send(200, { status: 'UP', provider: 'CODEX', model: MODEL, busy });
     if (req.method === 'GET' && req.url === '/usage') {
       try {
         if (!usageCache || Date.now() - usageCache.time > 30000) {

@@ -81,6 +81,7 @@ class CostLedgerIntegrationTest {
         ledger.reserveBounded(first, liveRequest("0.20", 60), new BigDecimal("0.30"), 120);
         ledger.startDispatch(first);
         ledger.markUncertain(first);
+        assertThat(ledger.committedTranscriptionSeconds(meetingId)).isEqualTo(60);
         ReservationRequest summary = new ReservationRequest(meetingId, "OPENAI", "gpt-6.1-sol", "SUMMARY",
                 "synthetic-test", new BigDecimal("0.11"), 1);
         assertThatThrownBy(() -> ledger.reserveBounded(UUID.randomUUID(), summary, new BigDecimal("0.30"), 120))
@@ -97,9 +98,11 @@ class CostLedgerIntegrationTest {
         ledger.reserveBounded(first, liveRequest("0.20", 60), BigDecimal.ONE, 60);
         ledger.startDispatch(first);
         ledger.settle(first, new Settlement(new BigDecimal("0.05"), 15L, null, null));
+        assertThat(ledger.committedTranscriptionSeconds(meetingId)).isEqualTo(15);
         ledger.reserveBounded(UUID.randomUUID(), new ReservationRequest(meetingId, "OPENAI", "gpt-6.1-sol",
                 "SUMMARY", "synthetic-test", new BigDecimal("0.10"), 1), BigDecimal.ONE, 60);
         ledger.reserveBounded(UUID.randomUUID(), liveRequest("0.10", 45), BigDecimal.ONE, 60);
+        assertThat(ledger.committedTranscriptionSeconds(meetingId)).isEqualTo(60);
         assertThatThrownBy(() -> ledger.reserveBounded(UUID.randomUUID(), liveRequest("0.01", 1), BigDecimal.ONE, 60))
                 .isInstanceOfSatisfying(ApiException.class,
                         error -> assertThat(error.code()).isEqualTo("MEETING_AUDIO_LIMIT_EXCEEDED"));

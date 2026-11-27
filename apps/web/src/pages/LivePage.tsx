@@ -6,7 +6,8 @@ import { MockNotice, TranscriptCard } from '../components'
 import { createSpeakerLabels } from '../speakerLabels'
 import { liveReducer, initialLiveState } from '../liveReducer'
 import { AppLink } from '../router'
-import type { AiConfiguration, Meeting } from '../types'
+import type { AiConfiguration, Meeting, RecordingImportStatus } from '../types'
+import { RecordingImportPanel } from '../RecordingImportPanel'
 import { RecordingPanel } from '../RecordingPanel'
 import { SummaryPanel } from '../SummaryPanel'
 import { TranscriptSearch } from '../TranscriptSearch'
@@ -30,6 +31,7 @@ export function LivePage({ meetingId, onUnauthorized }: { meetingId: string; onU
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [syncError, setSyncError] = useState('')
+  const [importState, setImportState] = useState<RecordingImportStatus['state']>()
   const [audioGaps, setAudioGaps] = useState<{ startMs: number; endMs: number }[]>([])
   const [stopping, setStopping] = useState(false)
   const [aiConfiguration, setAiConfiguration] = useState<AiConfiguration>()
@@ -74,6 +76,7 @@ export function LivePage({ meetingId, onUnauthorized }: { meetingId: string; onU
     const transport = new LivePcmTransport({
       meetingId,
       baseOffsetMs,
+      finishTimeoutMs: configuration.speechProvider === 'WHISPER' ? 60_000 : undefined,
       socketUrl: liveSocketUrl,
       onConnecting: (reconnecting) => dispatch({ type: 'connecting', reconnecting }),
       onEvent: (event) => dispatch({ type: 'event', event }),
@@ -176,9 +179,12 @@ export function LivePage({ meetingId, onUnauthorized }: { meetingId: string; onU
   const speakerLabels = [...new Set([...allSegments.map(segment => segment.speakerLabel), ...Object.keys(speakerMerges), ...Object.values(speakerMerges)].filter((label): label is string => Boolean(label)))]
   const displayedSegments = state.segments.map(segment => speakerOverrides[segment.segmentId] ? { ...segment, speakerLabel: speakerOverrides[segment.segmentId] } : segment)
   const isLive = meeting.status === 'STARTED'
+  const imported = meeting.inputSource === 'IMPORTED_RECORDING'
+  const importProcessing = imported && (!importState || ['QUEUED', 'TRANSCRIBING', 'SUMMARY_QUEUED', 'SUMMARIZING'].includes(importState))
   const localRecording = meeting.inputSource === 'LOCAL_RECORDING'
   const liveAi = meeting.inputSource === 'LIVE'
   const microphoneMode = localRecording || liveAi
+  const whisper = aiConfiguration?.speechProvider === 'WHISPER'
 
   return (
     <main className="mx-auto max-w-7xl px-5 py-8 md:px-10 md:py-10">
@@ -201,14 +207,15 @@ export function LivePage({ meetingId, onUnauthorized }: { meetingId: string; onU
         <div>
           <div className="rounded-[2rem] bg-moss p-7 text-white shadow-soft md:p-9">
             <div className="flex flex-wrap items-start justify-between gap-5">
-              <div><p className="text-xs font-black uppercase tracking-[0.2em] text-mint/70">{localRecording ? 'Microphone recording' : liveAi ? 'Live AI transcript' : 'Live transcript · Mock'}</p><h1 className="mt-3 max-w-3xl text-3xl font-black leading-tight tracking-[-0.045em] md:text-5xl">{meeting.title}</h1><p className="mt-4 flex items-center gap-2 text-sm text-white/65"><Radio className="h-4 w-4" />{localRecording ? '녹음은 보존하며 음성 인식은 연결하지 않습니다.' : liveAi ? '원본 녹음과 실시간 AI 전사를 같은 마이크에서 독립 처리합니다.' : '가상 발언 이벤트를 시간순으로 표시합니다.'}</p></div>
+              <div><p className="text-xs font-black uppercase tracking-[0.2em] text-mint/70">{imported ? '녹음 파일 회의록' : localRecording ? 'Microphone recording' : liveAi ? (whisper ? '로컬 Whisper 전사' : 'Live AI transcript') : 'Live transcript · Mock'}</p><h1 className="mt-3 max-w-3xl text-3xl font-black leading-tight tracking-[-0.045em] md:text-5xl">{meeting.title}</h1><p className="mt-4 flex items-center gap-2 text-sm text-white/65"><Radio className="h-4 w-4" />{imported ? '녹음 파일에서 생성한 전사와 AI 요약을 확인할 수 있습니다.' : localRecording ? '녹음은 보존하며 음성 인식은 연결하지 않습니다.' : liveAi ? '원본 녹음과 실시간 AI 전사를 같은 마이크에서 독립 처리합니다.' : '가상 발언 이벤트를 시간순으로 표시합니다.'}</p></div>
               {isLive && !microphoneMode ? <button className="button-stop" onClick={stop} disabled={stopping}>{stopping ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <CircleStop className="h-4 w-4" />}회의 종료</button> : meeting.status === 'CREATED' ? <button className="button-light" onClick={start}><Radio className="h-4 w-4" />{microphoneMode ? '회의 준비' : '가상 스트림 시작'}</button> : null}
             </div>
           </div>
 
           {(error || syncError) && <p role="alert" className="mt-4 rounded-2xl bg-red-50 p-4 text-sm font-semibold text-red-800">{error || syncError}</p>}
           {liveAi && <p className="mt-4 rounded-2xl bg-white p-4 text-sm leading-6 text-slate-600">같은 회의를 연 기기에 발언과 화자 설정이 자동으로 반영됩니다. 휴대폰에서 녹음 중이면 노트북에서는 이 화면만 열어두세요. 마이크를 시작한 기기에서만 음성을 전송하며, 보기만 하는 기기는 추가 전사 비용이 없습니다.</p>}
-          <MeetingTools meeting={meeting} onChanged={setMeeting} onUnauthorized={onUnauthorized} />
+          {imported && <RecordingImportPanel meetingId={meetingId} onUnauthorized={onUnauthorized} onState={setImportState} onTranscriptReady={loadTranscript} />}
+          <MeetingTools documentDisabled={importProcessing} meeting={meeting} onChanged={setMeeting} onUnauthorized={onUnauthorized} />
           {state.notice && <p role="status" className="mt-4 flex gap-2 rounded-2xl bg-amber-50 p-4 text-sm font-semibold text-amber-900"><AlertTriangle className="h-5 w-5 shrink-0" />{state.notice}</p>}
           {audioGaps.length > 0 && <div className="mt-4 rounded-2xl bg-amber-50 p-4 text-sm text-amber-900" aria-label="전사 누락 구간">
             <p className="font-bold">AI 전사 누락 구간 · 원본 녹음은 별도로 보존됩니다</p>
@@ -231,7 +238,7 @@ export function LivePage({ meetingId, onUnauthorized }: { meetingId: string; onU
             </div>)}
             {partials.map((segment) => <TranscriptCard key={`partial-${segment.eventId}`} segment={segment} speakerName={speakerName(segment.speakerLabel)} partial />)}
             {!localRecording && state.segments.length === 0 && partials.length === 0 && (
-              <div className="rounded-[2rem] border border-dashed border-moss/20 bg-white/45 py-16 text-center"><Radio className="mx-auto h-9 w-9 animate-pulse text-moss/30" /><p className="mt-4 font-black">{liveAi ? '마이크를 시작하면 실시간 자막이 표시됩니다' : '첫 가상 발언을 기다리고 있어요'}</p><p className="mt-1 text-sm text-slate-500">연결되면 임시 자막부터 차례로 표시됩니다.</p></div>
+              <div className="rounded-[2rem] border border-dashed border-moss/20 bg-white/45 py-16 text-center"><Radio className="mx-auto h-9 w-9 animate-pulse text-moss/30" /><p className="mt-4 font-black">{imported ? '전사가 완료되면 발언 기록이 표시됩니다.' : liveAi ? '마이크를 시작하면 실시간 자막이 표시됩니다' : '첫 가상 발언을 기다리고 있어요'}</p><p className="mt-1 text-sm text-slate-500">연결되면 임시 자막부터 차례로 표시됩니다.</p></div>
             )}
           </div>
         </div>
@@ -245,13 +252,13 @@ export function LivePage({ meetingId, onUnauthorized }: { meetingId: string; onU
             const saved = await api.renameSpeaker(meetingId, label, name, expected)
             setSpeakerNames(current => ({ ...current, [label]: saved.displayName ?? '' }))
           }} />
-          <SummaryPanel segments={displayedSegments} speakerName={speakerName} meetingId={meetingId} stopped={!isLive && meeting.status !== 'CREATED'} transcriptKey={state.segments.length ? String(syncVersion) + state.segments.map((segment) => `${segment.segmentId}:${segment.revision}`).join('|') : ''} hasTopic={Boolean(meeting.topicId)} aiConfiguration={aiConfiguration} onChanged={loadTranscript} />
+          <SummaryPanel segments={displayedSegments} speakerName={speakerName} meetingId={meetingId} stopped={!isLive && meeting.status !== 'CREATED'} transcriptKey={state.segments.length ? String(syncVersion) + (importState ?? '') + state.segments.map((segment) => `${segment.segmentId}:${segment.revision}`).join('|') : ''} hasTopic={Boolean(meeting.topicId)} aiConfiguration={aiConfiguration} importProcessing={importProcessing} onChanged={loadTranscript} />
           <details className="rounded-2xl border border-moss/10 bg-white/70 p-4">
             <summary className="cursor-pointer text-sm font-bold text-moss">회의 상태와 이용 안내</summary>
             <div className="mt-4 space-y-4">
-          {!microphoneMode && <MockNotice />}
-          {liveAi && <div className="rounded-2xl border border-coral/30 bg-red-50 p-4 text-sm leading-6 text-red-900"><strong>유료 AI 사용</strong><br />마이크 시작 후 음성이 외부 STT로 전송됩니다. 최대 {Math.round((aiConfiguration?.maximumAudioSeconds ?? 0) / 60)}분 · 회의당 최대 ${aiConfiguration?.maximumMeetingUsd?.toFixed(2) ?? '0.00'}로 서버에서 제한합니다.</div>}
-          <p className="rounded-2xl border border-moss/10 bg-white/70 p-4 text-xs font-semibold leading-5 text-slate-500">{localRecording ? '외부 AI 전송과 과금은 없습니다. 녹음 기기의 페이지를 닫으면 마이크가 중지됩니다. 브라우저에 저장된 청크는 이 회의 화면에서 복구하세요.' : liveAi ? '실시간 전사가 끊겨도 원본 녹음은 계속됩니다. 누락 구간은 화면에 시간 범위로 표시되며 이미 전송한 음성을 재전송하지 않습니다. 보기 기기의 창을 닫아도 녹음 기기는 계속 동작합니다.' : '가상 재생은 다른 보기 창을 닫아도 계속됩니다. 재접속하면 저장된 발언을 동기화합니다.'}</p>
+          {!microphoneMode && !imported && <MockNotice />}
+          {liveAi && !whisper && <div className="rounded-2xl border border-coral/30 bg-red-50 p-4 text-sm leading-6 text-red-900"><strong>유료 AI 사용</strong><br />마이크 시작 후 음성이 외부 STT로 전송됩니다. 최대 {Math.round((aiConfiguration?.maximumAudioSeconds ?? 0) / 60)}분 · 회의당 최대 ${aiConfiguration?.maximumMeetingUsd?.toFixed(2) ?? '0.00'}로 서버에서 제한합니다.</div>}
+          {!imported && <p className="rounded-2xl border border-moss/10 bg-white/70 p-4 text-xs font-semibold leading-5 text-slate-500">{localRecording ? '외부 AI 전송과 과금은 없습니다. 녹음 기기의 페이지를 닫으면 마이크가 중지됩니다. 브라우저에 저장된 청크는 이 회의 화면에서 복구하세요.' : liveAi && whisper ? 'Whisper가 서버 PC에서 음성을 처리합니다. 자막은 구간별로 표시되고, 마이크 원본은 별도로 보관합니다.' : liveAi ? '실시간 전사가 끊겨도 원본 녹음은 계속됩니다. 누락 구간은 화면에 시간 범위로 표시되며 이미 전송한 음성을 재전송하지 않습니다. 보기 기기의 창을 닫아도 녹음 기기는 계속 동작합니다.' : '가상 재생은 다른 보기 창을 닫아도 계속됩니다. 재접속하면 저장된 발언을 동기화합니다.'}</p>}
           <div className="rounded-2xl border border-white bg-white p-5 shadow-sm"><p className="eyebrow">상태 읽는 법</p><dl className="mt-4 space-y-4 text-sm"><div><dt className="font-black text-ink">전사 상태</dt><dd className="mt-1 leading-5 text-slate-500">임시·확정·교정 여부를 표시합니다.</dd></div><div><dt className="font-black text-ink">화자 상태</dt><dd className="mt-1 leading-5 text-slate-500">전사와 별도로 늦게 갱신될 수 있습니다.</dd></div><div><dt className="font-black text-ink">원문</dt><dd className="mt-1 leading-5 text-slate-500">교정되어도 최초 확정 문장을 보존합니다.</dd></div></dl></div>
             </div>
           </details>

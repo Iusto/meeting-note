@@ -97,6 +97,8 @@ export function liveReducer(state: LiveState, action: LiveAction): LiveState {
   }
 
   const event = action.event
+  if (event.type === 'stream.pong') return state
+  if (event.type === 'stream.retry') return { ...state, connection: 'reconnecting', partials: {}, notice: event.message }
   if (event.type === 'session.ready') {
     return { ...state, connection: 'connected', streamSessionId: event.streamSessionId, notice: undefined }
   }

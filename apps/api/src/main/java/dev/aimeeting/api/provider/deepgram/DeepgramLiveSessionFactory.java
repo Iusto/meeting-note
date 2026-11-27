@@ -7,6 +7,7 @@ import dev.aimeeting.api.settings.AppSettings;
 import dev.aimeeting.api.settings.SettingsRepository;
 import dev.aimeeting.api.topic.TopicRepository;
 import dev.aimeeting.api.usage.ledger.CostLedgerService;
+import dev.aimeeting.api.web.ApiException;
 import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Duration;
@@ -17,6 +18,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Component;
+import org.springframework.http.HttpStatus;
 
 /** Creates one paid Deepgram session without exposing provider credentials to the browser. */
 @Component
@@ -42,11 +44,19 @@ public final class DeepgramLiveSessionFactory {
     public CompletableFuture<DeepgramMeetingPoc> open(UUID meetingId, long audioOffsetMs,
                                                        Consumer<SpeechEvent> events) {
         configuration.requireSpeech();
+        // A disappearing browser can reconnect before the old provider has flushed and settled.
+        // Do not reserve a second session against that still-active allowance.
+        if (meetings.hasActiveDeepgramSession(meetingId)) {
+            return CompletableFuture.failedFuture(new ApiException(HttpStatus.CONFLICT,
+                    "TRANSCRIPTION_RECOVERING", "Previous transcription is still finalizing"));
+        }
         AppSettings currentSettings = settings.get();
         long settingsMaximumSeconds = Math.multiplyExact((long) currentSettings.perMeetingMaxMinutes(), 60L);
         long maximumSeconds = Math.min(configuration.maximumAudioSeconds(), settingsMaximumSeconds);
         long elapsedSeconds = Math.min(maximumSeconds, (audioOffsetMs + 999) / 1_000);
         long remainingSeconds = maximumSeconds - elapsedSeconds;
+        remainingSeconds = Math.min(remainingSeconds,
+                Math.max(0, maximumSeconds - ledger.committedTranscriptionSeconds(meetingId)));
         BigDecimal rate = configuration.deepgramRatePerMinute();
         BigDecimal availableMonthlyUsd = currentSettings.monthlyBudgetUsd()
                 .subtract(ledger.totals(YearMonth.now(ZoneOffset.UTC)).budgetCommittedUsd())

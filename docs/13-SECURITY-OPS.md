@@ -1,6 +1,6 @@
 # 13. 개인정보·비밀·홈서버 운영
 
-운영 대상은 단일 소유자의 Mock/로컬 녹음/LIVE AI 앱이다. 유료 AI는 서버 운영자가 명시적으로 켠 경우에만 동작한다. 실행 스크립트의 전체 옵션은 [운영 도구 안내](../scripts/README.md), 검증 결과는 [07](07-TEST-AND-EVAL.md)에 둔다.
+운영 대상은 단일 소유자용 회의록 앱이다. `start-meeting.bat`은 로컬 Whisper와 Codex 구독 요약을 시작한다. 실행 스크립트의 전체 옵션은 [운영 도구 안내](../scripts/README.md), 검증 결과는 [07](07-TEST-AND-EVAL.md)에 둔다.
 
 ## 평소 시작·종료·업데이트
 
@@ -9,27 +9,29 @@
 | 상황 | 저장소 루트에서 할 일 |
 |---|---|
 | 최초 비공개 배포·설정 점검 | [Windows 배포 스크립트](../scripts/README.md#windows-private-deployment) 실행 |
-| PC 재시작 후 | Docker·Tailscale 실행 뒤 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-private.ps1 -EnablePaidAi`, `tailscale serve status` 확인 |
-| 코드 변경 반영 | 같은 시작 스크립트를 실행해 이미지를 갱신. bridge 코드 변경은 기존 bridge 종료 후 재실행. 녹음 중에는 실행하지 않음 |
+| PC 재시작 후 | Docker Desktop·Tailscale 실행 뒤 `start-meeting.bat`을 더블클릭하고 자동으로 열린 새 회의 페이지에 로그인 |
+| 코드 변경 반영 | 같은 시작 스크립트를 실행해 이미지를 갱신. bridge 모델 변경 시 시작 스크립트가 기존 bridge를 교체. 녹음 중에는 실행하지 않음 |
 | 상태 확인 | `docker compose ps`, 같은 tailnet 기기에서 HTTPS 주소·로그인·녹음 재생 확인 |
-| 종료 | 진행 중 녹음을 종료·업로드 확인한 뒤 같은 Compose 파일 조합으로 `down` |
+| 종료 | 진행 중 녹음을 종료·업로드 확인한 뒤 `docker compose -f compose.yaml -f compose.tailscale.yaml -f compose.whisper.yaml down` |
 
-Compose의 `restart: unless-stopped`는 Docker 엔진이 시작돼야 동작한다. `down -v`는 DB·녹음 볼륨을 삭제하므로 평소 종료에 사용하지 않는다. 기존 `.env`를 덮어쓰거나 새 토큰을 불필요하게 생성하지 않는다. 배포 스크립트는 기본적으로 유료 호출을 끄고, `-EnablePaidAi`를 명시한 실행에서만 서버 프로세스에 키를 전달한다.
+Compose의 `restart: unless-stopped`는 Docker 엔진이 시작돼야 동작한다. `down -v`는 DB·녹음 볼륨을 삭제하므로 평소 종료에 사용하지 않는다. 기존 `.env`를 덮어쓰거나 새 토큰을 불필요하게 생성하지 않는다. 기본 실행은 Deepgram·OpenAI API 키 없이 동작한다.
 
-Codex 기본 모드에서는 PC의 ChatGPT 로그인이 유지되면 된다. CLI 창은 열어둘 필요 없으며 숨겨진 bridge가 요청마다 실행한다. 로그인 만료는 `codex login`으로 복구한다. 모델 추론은 OpenAI 서버에서 수행되므로 회의 텍스트의 외부 전송은 계속 발생한다. 기본 배포의 `OPENAI_API_KEY`는 비우고 Deepgram 키는 유지한다. `.omx/codex-bridge/token`과 Codex 자격증명은 Git·브라우저·로그에 노출하지 않는다. bridge 포트 8767은 Docker 접근용이며 공개 프록시/Tailscale Serve에 추가하지 않는다.
+Codex 기본 모드에서는 PC의 ChatGPT 로그인이 유지되면 된다. CLI 창은 열어둘 필요 없으며 숨겨진 bridge가 요청마다 실행한다. 로그인 만료는 `codex login`으로 복구한다. 모델 추론은 OpenAI 서버에서 수행되므로 회의 텍스트의 외부 전송은 계속 발생한다. Whisper는 서버 PC에서 원본 음성을 처리한다. `.omx/codex-bridge/token`과 Codex 자격증명은 Git·브라우저·로그에 노출하지 않는다. bridge 포트 8767은 Docker 접근용이며 공개 프록시/Tailscale Serve에 추가하지 않는다.
+
+운영 실행기의 Codex 모델은 `gpt-6.2-sol`로 지정한다. 새 Sol 버전이 나와도 자동으로 전환되지 않는다. 적용하려면 bridge와 Windows 시작 스크립트의 모델 설정을 함께 변경하고 시작 파일을 다시 실행한다.
 
 ## 원칙
-- 회의 녹음 사실과 외부 STT(Deepgram), 교정/요약(OpenAI) 전송 여부를 명확하게 안내. 참석자의 동의와 소속 조직 정책을 확인한다.
+- 회의 녹음 사실과 요약·교정용 텍스트의 OpenAI 전송을 알리고 참석자 동의와 소속 조직 정책을 확인한다.
 - 회사 MES/ERP/IT 회의는 영업비밀, 개인 정보, 설비번호 등을 포함할 수 있으므로 **업무 목적 녹음·제3자 API 전송이 허용되는지** 확인한 후 사용한다.
-- 개인 사용이라도 Deepgram/OpenAI 데이터 보관·처리 지역·서비스 약관 확인. 암호화·삭제 정책 마련.
+- OpenAI의 데이터 보관·처리 지역과 서비스 약관을 확인하고 녹음 및 회의록 보관 기준을 정한다.
 
 ## 키/네트워크
 - 최초 계정 등록 때만 `APP_OWNER_TOKEN`을 확인한다. 등록 후에는 아이디·비밀번호를 사용하고 토큰 로그인은 닫는다. 비밀번호는 PBKDF2 해시, DB 세션은 무작위 쿠키의 SHA-256 해시만 보관한다. 공용 기기에서는 30일 로그인 유지를 선택하지 않고 사용 후 로그아웃한다.
 - `.env`/환경변수의 `DEEPGRAM_API_KEY`, `OPENAI_API_KEY`는 서버만 접근하고 브라우저에 보내지 않는다.
-- Spring Boot 서버가 Deepgram WS relay를 담당하고, 브라우저는 인증된 우리 WSS로 PCM16 음성을 보낸다. 공급자 키는 브라우저·응답·로그·DB에 전달하지 않는다.
+- 브라우저는 인증된 WSS로 PCM16 음성을 Spring Boot API에 보낸다. API는 Docker 내부 네트워크에서 Whisper를 호출한다.
 - WebSocket Origin/세션 검증, 요청 크기·레이트 제한, 연결 종료 처리. HTTPS/WSS 사용.
 - 집 PC는 Tailscale 같은 VPN 우선, 공유기 공개 포트 개방은 기본 금지. PostgreSQL은 localhost/internal Docker network에만 바인딩.
-- 현재 녹음 청크 API는 서버 생성 경로·경로 탈출/링크 거부·SHA-256·청크 8MiB 제한·MIME 일치를 검증한다. 임의 파일 업로드·형식 sniff·디스크 전체 용량 제한은 별도 구현/검증이 필요하다.
+- 현재 녹음 청크 API는 서버 생성 경로·경로 탈출/링크 거부·SHA-256·청크 8MiB 제한·MIME 일치를 검증한다. 녹음 파일 업로드는 지원 형식·256 MiB 크기·실제 디코딩·전사 시간 한도를 확인한다. 디스크 포화 시의 동작은 검증 항목으로 남아 있다.
 
 ## 녹음 보관
 - DB에는 파일 경로·hash만, 실제 음성은 안전한 로컬 경로.
@@ -40,7 +42,7 @@ Codex 기본 모드에서는 PC의 ChatGPT 로그인이 유지되면 된다. CLI
 ## 로그·비용
 - 로깅: requestId, meetingId, streamSessionId, 처리 시간, provider·모델·오디오분·토큰, 오류 코드. 로그인 쿠키·인증 세션 원문은 기록하지 않는다.
 - 금지: 음성 본문, 전사 원문, 장기 키, 전체 인증 헤더, 개인정보가 담긴 프롬프트.
-- 유료 호출은 기본 OFF다. LIVE 실사용은 월·회의 시간/금액 상한 안에서 실행하고 재연결·OpenAI 재요청을 누적한다. 월 예산 기본값 0을 사용자가 양수로 바꾸기 전에는 호출을 시작하지 않는다. [비용 정책](09-COST.md)을 따른다.
+- 기본 운영은 Whisper 전사 시간과 Codex 구독 한도를 적용한다. 월·회의 금액 상한은 별도로 실행하는 기존 유료 API 진단에 적용한다. [비용 정책](09-COST.md)
 - STT 공급자 가격·요금제 변경, 장애·API 스펙 변경을 운영 문서에 기록.
 
 ## 인증
@@ -69,6 +71,6 @@ tailscale serve status
 
 `WEB_PORT`를 바꿨다면 Serve 대상 포트도 바꾼다. 같은 tailnet의 다른 기기에서 표시된 HTTPS 주소로 접속한다. Serve는 tailnet 전용이며 공개 Funnel이나 공유기 포트 개방은 사용하지 않는다. [공식 Serve 안내](https://tailscale.com/docs/features/tailscale-serve)
 
-Windows에서는 [배포 스크립트](../scripts/README.md#windows-private-deployment)로 주소 감지·비밀 생성·Compose 실행·인증 응답 확인·Serve 설정을 진행할 수 있다. 기존 `.env`와 Docker 데이터를 유지한다. 기본 실행은 유료 호출을 끄며 `-EnablePaidAi` 실행만 Windows 사용자/현재 프로세스의 공급자 키를 사용한다.
+Windows에서는 [배포 스크립트](../scripts/README.md#windows-private-deployment)로 주소 감지·비밀 생성·Compose 실행·인증 응답 확인·Serve 설정을 진행할 수 있다. 기존 `.env`와 Docker 데이터를 유지한다. 일반 운영은 `start-meeting.bat`으로 시작한다. [사용 순서](02-USER-FLOW.md)
 
 기존 배포의 화면 접속·로그인·녹음 재생과 프록시 시험 결과는 [07](07-TEST-AND-EVAL.md)에 기록했다. 변경 이미지에서는 다른 기기의 로그인·마이크 권한·인증된 WSS·`Secure; HttpOnly; SameSite=Strict` 쿠키·허용하지 않은 Origin 거절을 실제 주소로 다시 확인한다. 실제 공급자 WSS는 별도 확인 대상이다. 전달 헤더 설정의 근거는 [Spring Boot 3.5 공식 문서](https://docs.spring.io/spring-boot/3.5/how-to/webserver.html#howto.webserver.use-behind-a-proxy-server)다.

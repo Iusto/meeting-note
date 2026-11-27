@@ -17,7 +17,8 @@ public class AiConfigurationController {
     @GetMapping
     public Response get() {
         return new Response(configuration.enabled(), configuration.speechAvailable(), configuration.llmAvailable(),
-                configuration.maximumAudioSeconds(), configuration.maximumMeetingUsd(), configuration.codexEnabled() ? "CODEX" : "OPENAI");
+                configuration.transcriptionMaximumSeconds(), configuration.maximumMeetingUsd(),
+                configuration.codexEnabled() ? "CODEX" : "OPENAI", configuration.whisperEnabled() ? "WHISPER" : "DEEPGRAM");
     }
 
     @GetMapping("/usage")
@@ -28,5 +29,5 @@ public class AiConfigurationController {
     }
 
     public record Response(boolean enabled, boolean speechAvailable, boolean llmAvailable,
-                           int maximumAudioSeconds, BigDecimal maximumMeetingUsd, String llmProvider) {}
+                           int maximumAudioSeconds, BigDecimal maximumMeetingUsd, String llmProvider, String speechProvider) {}
 }

@@ -30,6 +30,10 @@ public class MeetingController {
         return meetings.search(q);
     }
     @PostMapping public Meeting create(@Valid @RequestBody CreateMeeting request) {
+        if (request.inputSource() == InputSource.IMPORTED_RECORDING) {
+            throw new dev.aimeeting.api.web.ApiException(org.springframework.http.HttpStatus.BAD_REQUEST,
+                    "INVALID_INPUT_SOURCE", "녹음 파일 업로드로 회의를 만들어 주세요.");
+        }
         return meetings.create(request.title(), request.inputSource() == null ? InputSource.MOCK : request.inputSource(), request.topicId());
     }
     @GetMapping("/{id}") public Meeting get(@PathVariable UUID id) { return meetings.find(id); }

@@ -1,8 +1,8 @@
 # 05. REST API와 실시간 이벤트 계약
 
-> 이 문서는 **우리 애플리케이션의 내부 계약**이다. 외부 Deepgram/OpenAI 공급자 이벤트·parameter의 실제 schema는 개발 당시 공식 문서/SDK에서 확인하고 adapter로 변환한다.
+> 이 문서는 **우리 애플리케이션의 내부 계약**이다. Whisper·Codex와 별도 외부 API 공급자의 응답은 어댑터에서 내부 계약으로 변환한다.
 
-현재 앱은 Mock 전사, 로컬 녹음, 실제 AI LIVE 전사를 제공한다. 경로는 별도 표기가 없으면 `/api/v1` 기준이다.
+현재 앱은 Mock 전사, 로컬 녹음, Whisper LIVE 전사, 녹음 파일 업로드를 제공한다. 경로는 별도 표기가 없으면 `/api/v1` 기준이다.
 
 ## 인증·기본 회의 계약 (2026-10-25)
 - `GET /api/v1/session/configuration`은 인증 없이 `{setupRequired}`를 반환한다. 최초 `POST /api/v1/session/setup {token,username,password,rememberMe}`에서 기존 접속 토큰으로 단일 소유자 계정을 등록하고 로그인한다. 등록 후 추가 가입과 토큰 로그인은 거절한다.
@@ -10,14 +10,14 @@
 - 비밀번호는 소금값을 적용한 PBKDF2-HMAC-SHA256(600,000회), 세션은 무작위 원문의 SHA-256 해시만 저장한다. 가입·로그인에는 동일한 Origin 검사와 시도 제한을 적용한다. 비밀번호·접속 토큰은 브라우저 저장소에 남기지 않는다.
 - 기본 회의 API는 목록/생성/조회, `start`, `stop`, `transcript`, revision 기반 세그먼트 교정이다. 추가 구현 계약은 아래 녹음·사전·관리 절을 따른다.
 - 회의 상태는 `CREATED` → `STARTED` → `STOPPED`. 목록과 transcript 응답은 JSON 배열이다.
-- `/api/v1/meetings/{id}/live`는 인증과 정확한 Origin 검사를 통과한 연결만 허용한다. MOCK은 가상 이벤트를 전송하고 LIVE는 binary PCM16 16kHz mono를 받아 Deepgram 이벤트로 변환한다. 동일 발언의 partial/final은 같은 `eventId`를 사용하고, 확정 저장 뒤에는 `segmentId`도 제공한다.
+- `/api/v1/meetings/{id}/live`는 인증과 정확한 Origin 검사를 통과한 연결만 허용한다. Mock은 가상 이벤트를 전송하고 LIVE는 binary PCM16 16kHz mono를 받는다. 기본 Whisper 모드는 확정 이벤트를 전송한다. partial을 지원하는 모드에서는 같은 발언의 partial/final이 `eventId`를 공유한다. 확정 저장 뒤에는 `segmentId`도 제공한다.
 - 추가 이벤트 `transcript.corrected`는 원문을 바꾸지 않고 `displayText`, `transcriptStatus=CORRECTED`, 증가한 `revision`을 전달한다. 화자 상태는 별도로 갱신한다.
 - Mock은 `stream.stopped`로 자동 종료된다. LIVE는 마이크 시작 뒤 오디오 프레임을 보내며 STT 오류·재연결 중에도 다음 절의 녹음 경로를 유지한다. 계정 설정/등록/로그인·health 외 데이터 API는 인증이 필요하며, 상태 변경 요청에는 허용된 `Origin` 헤더가 필요하다.
 - Mock의 마지막 라이브 연결이 끊기거나 로그아웃하면 가상 회의도 종료하고 실행 슬롯을 해제한다. 이미 저장한 확정 발언은 유지한다. 로컬 녹음과 업로드 복구는 별도 경로다.
 
 ## API 키 없는 녹음 구현 (2026-10-16)
 
-- 회의 생성: `{title, inputSource?: "MOCK" | "LOCAL_RECORDING" | "LIVE", topicId?}`. 생략 시 Mock이며 응답에 `inputSource`를 포함한다.
+- 회의 생성: `{title, inputSource?: "MOCK" | "LOCAL_RECORDING" | "LIVE", topicId?}`. `IMPORTED_RECORDING`은 파일 업로드 경로에서 생성한다. 생략 시 Mock이며 응답에 `inputSource`를 포함한다.
 - `LOCAL_RECORDING`은 외부 STT/가상 전사 WebSocket을 열지 않는다. 마지막 WebSocket 연결 종료 규칙은 기존 mock 회의에만 해당한다. 로컬 녹음 회의는 명시 종료하거나 로그아웃할 때 실행 슬롯을 해제한다.
 - `POST /meetings/{id}/recording-chunks?sequence=0&startMs=0&endMs=2000&sha256=<64hex>&mimeType=audio%2Fwebm`: octet-stream 본문, 최대 8 MiB. 순서가 뒤바뀐 업로드도 허용한다. 동일 순번의 같은 내용·메타데이터 재시도는 멱등이며 다른 내용은 409다. 원본 내용의 SHA-256 불일치는 400이다.
 - `POST /meetings/{id}/recording-complete {chunkCount}`: 0부터 연속된 청크 개수·각 파일의 해시/길이·동일 미디어 형식을 검증하고 순서대로 결합한다. 완료 후 추가 청크는 409이며 같은 완료 요청은 멱등이다. 종료 후 남은 청크의 업로드 복구도 허용한다.
@@ -28,19 +28,20 @@
 ## 사전·교정·요약 계약
 - `GET/POST /topics`, `PATCH/DELETE /topics/{id}`: 주제 CRUD. 사용 중인 주제 삭제는 거절한다.
 - `GET/POST /topics/{id}/terms`, `PATCH/DELETE /topics/{id}/terms/{termId}`: 공유 canonical/의미/별칭과 `PENDING|APPROVED|REJECTED` 상태. 삭제는 해당 주제 연결을 해제하고 고아 용어를 정리한다.
-- `POST /topics/{id}/suggest-terms`: 유료 모드에서는 `PENDING / OPENAI`, 기본 모드에서는 Mock 후보를 생성한다. `GET /topics/{id}/keyterms`: 개별 승인된 canonical 문자열 배열, 최대 100개.
-- `POST/GET /meetings/{id}/correction-suggestions`, `PATCH /meetings/{id}/correction-suggestions/{suggestionId}`: 유료 모드에서는 OpenAI, 기본 모드에서는 승인 별칭 기반 Mock 제안을 생성한다. 적용 시 revision/span/사용자 잠금과 숫자·원문 범위를 다시 검사한다.
+- `POST /topics/{id}/suggest-terms`: 운영 AI 모드에서는 `PENDING / CODEX`, 별도 OpenAI API 모드에서는 `PENDING / OPENAI`, Mock 모드에서는 가상 후보를 생성한다. `GET /topics/{id}/keyterms`: 개별 승인된 canonical 문자열 배열, 최대 100개.
+- `POST/GET /meetings/{id}/correction-suggestions`, `PATCH /meetings/{id}/correction-suggestions/{suggestionId}`: 운영 AI 모드에서는 Codex, 별도 OpenAI API 모드에서는 OpenAI, Mock 모드에서는 승인 별칭 기반 제안을 생성한다. 적용 시 revision/span/사용자 잠금과 숫자·원문 범위를 다시 검사한다.
 - `GET/POST /meetings/{id}/summary`: 최신 요약 조회/명시적 새 버전 생성. 종료된 회의의 확정 전사가 필요하다. 긴 전사는 분할·병합하고 근거 segment ID와 revision snapshot으로 `stale`을 계산한다. 모르는 담당자·기한은 JSON null이다.
-- 후보·교정·요약은 자동 실행하지 않는다. 사용자가 해당 버튼을 누를 때 한 번의 작업을 예약한다.
+- 후보·교정과 마이크 회의 요약은 사용자가 버튼으로 실행한다. 업로드 회의는 전사 저장 후 요약 작업을 자동으로 시작한다.
 
 ## 구현된 검색·편집·내보내기 (2026-10-17)
 - `GET /meetings?q=`: 제목·최초 원문·표시 문장을 대소문자 구분 없이 부분 검색한다. 최대 200자, 빈 값은 전체 목록이며 `%`, `_`는 일반 문자다.
 - `PATCH /meetings/{id} {title,revision}`: 제목 최대 200자, 빈 제목 금지. 편집 시작 revision과 다르면 `409 STALE_REVISION`이다.
 - `GET /meetings/{id}/export?format=json|markdown`: 인증된 attachment 다운로드. JSON schemaVersion 1은 `{schemaVersion,meeting,transcript,summary}`이며 summary 미생성은 null이다. transcript의 `id`는 근거 segment ID다. 원문/표시 문장·수정/화자 상태·잠금과 요약 근거/오래됨을 함께 보존한다. 경로나 키는 포함하지 않는다.
 
-## 구현된 사용량·예산 설정 (2026-10-18)
-- `GET /settings`와 `PATCH /settings`: `monthlyBudgetUsd`(0–10000, 소수 2자리), `warnAtPercent`(1–100), `perMeetingMaxMinutes`(1–1440), `recordingRetentionDays`(null 또는 1–3650), `revision`. PATCH는 편집 항목 전체와 revision을 받으며 오래된 revision은 409다. 응답의 `paidApiEnabled`는 서버 배포 opt-in 상태이며 UI에서 이를 켤 수 없다.
-- `GET /ai/configuration`: 유료 모드와 STT/LLM 가용 여부, 서버 시간·회의 비용 상한을 반환한다. 키 또는 키 일부는 반환하지 않는다.
+## AI 설정과 사용량
+- `GET /settings`와 `PATCH /settings`: `monthlyBudgetUsd`(0–10000, 소수 2자리), `warnAtPercent`(1–100), `perMeetingMaxMinutes`(1–1440), `perMeetingBudgetUsd`(0.01–10000, 소수 2자리, PATCH 생략 시 유지), `recordingRetentionDays`(null 또는 1–3650), `revision`. PATCH는 편집 항목 전체와 revision을 받으며 오래된 revision은 409다. 응답의 `paidApiEnabled`는 서버 배포 opt-in 상태이며 UI에서 이를 켤 수 없다.
+- `GET /ai/configuration`: 전사·요약 가용 여부(`speechAvailable`, `llmAvailable`), 공급자(`speechProvider: WHISPER|DEEPGRAM`, `llmProvider: CODEX|OPENAI`), 전사 시간 상한(`maximumAudioSeconds`)을 반환한다. `enabled`와 `maximumMeetingUsd`는 별도 유료 API 설정이다.
+- `GET /ai/configuration/usage`: Codex bridge의 계정 한도 조회 결과. Codex 경로가 설정돼 있을 때 조회할 수 있다.
 - `GET /usage?month=YYYY-MM`: UTC 회의 시작 월(미시작은 생성 월)의 완료 녹음 초·bytes를 합산한다. 비용은 요청 예약 월 기준이며, 다른 달 회의에 발생한 해당 월 비용도 포함한다. 월 생략 시 현재 UTC 월이다.
 - 비용 응답은 `totalEstimatedUsd`, `totalActualUsd`, `reservedUsd`, `budgetCommittedUsd`, `budgetRemainingUsd`, `unreconciledCount`를 구분한다. 공급자 청구를 확인하지 않은 실비는 `null`이며, 외부 작업이 없으면 0이다. 회의별 비용에도 같은 구분을 적용하고, 삭제된 회의의 비용은 월 전체 합계에 보존한다.
 - `budgetState`는 예산 0이면 `DISABLED`, 확정·예약 비용 합계에 따라 `OK|WARNING|EXHAUSTED`다. 내부 원장은 요청 ID 멱등성, 동시 예약 차단, 전송 전 예산·시간 재검사, 미확정 청구 보존을 제공한다. 원장 변경용 HTTP API는 제공하지 않는다.
@@ -70,21 +71,26 @@
 | GET | `/meetings/{id}/transcript` | 발언·화자·수정 상태 타임라인 |
 | PATCH | `/meetings/{id}/segments/{segmentId}` | 사용자 표시 문장 교정, `displayText`·`revision` 필수 |
 | GET/POST | `/meetings/{id}/summary` | 요약 조회/재생성 명시 요청 |
-| GET | `/meetings/{id}/export?format=markdown` | 일관된 snapshot 내보내기, JSON은 `format=json` |
+| GET | `/meetings/{id}/summary/progress` | 요약 단계·진행률 조회 |
+| POST | `/meetings/import` | 녹음 원본과 전사·요약 작업 저장 |
+| GET | `/meetings/{id}/import` | 업로드 회의 작업 상태 조회 |
+| POST | `/meetings/{id}/import/retry` | 실패 단계부터 재시도 |
+| GET | `/meetings/{id}/export` | 같은 회의 snapshot을 Markdown·JSON·DOCX·HWP·PDF로 내보내기 |
 | GET/POST | `/topics` | 주제 목록/생성 |
 | GET/POST | `/topics/{id}/terms` | 용어 목록/수동 추가, 상태로 승인·반려 관리 |
 | PATCH/DELETE | `/topics/{id}/terms/{termId}` | 용어·별칭·상태 변경/주제 연결 해제 |
-| POST | `/topics/{id}/suggest-terms` | 승인 전 Mock/OpenAI 후보 생성 |
+| POST | `/topics/{id}/suggest-terms` | 승인 전 Mock/Codex/OpenAI 후보 생성 |
 | GET | `/topics/{id}/keyterms` | 승인된 표준 용어 최대 100개 |
 | GET | `/usage` | 기간별 녹음분·외부 API 예상비 |
 | GET/PATCH | `/settings` | 예산 한도, 녹음 보존기간 등 |
-| GET | `/ai/configuration` | 서버 AI opt-in·공급자 가용 여부·상한 |
+| GET | `/ai/configuration` | AI 공급자·가용 여부·시간 제한·유료 API 설정 |
+| GET | `/ai/configuration/usage` | Codex 구독 한도 조회 |
 
 `/meetings/{id}/finalize`와 `/glossary-suggestions/{id}`는 과거 설계안이며 현재 endpoint가 아니다.
 
 ## 실시간 WebSocket 계약
 - 브라우저 ↔ `GET /api/v1/meetings/{id}/live` WebSocket.
-- **서버만** 외부 Deepgram WS 연결과 재연결, 긴 API 키를 관리한다.
+- Spring Boot API가 Docker 내부 Whisper 서비스로 음성을 전달하고 전사 결과를 응답 이벤트로 변환한다. 기존 Deepgram 진단 모드에서는 서버가 공급자 연결과 API 키를 관리한다.
 - LIVE 클라이언트가 송신: raw PCM16 little-endian 16kHz mono binary frame, JSON `{type:"stream.stop"}` 또는 `{type:"stream.ping"}`.
 - 서버가 송신: `session.ready`, `transcript.partial`, `transcript.final`, `speaker.updated`, `stream.warning`, `stream.error`, `stream.stopped`.
 
@@ -134,3 +140,15 @@ WebSocket `stream.error`에 안전한 사용자 안내용 `message`를 추가한
 `WS /api/v1/meetings/{id}/live?mode=watch`는 CREATED/STARTED/STOPPED 회의에서 인증된 소유자가 구독하는 읽기 연결이다. 시작 시 `session.ready`를 보내며, 이 이벤트는 마이크나 공급자 연결 성공을 뜻하지 않는다. LIVE/LOCAL_RECORDING 보기 연결은 음성 공급자·stream session·비용 예약을 생성하지 않는다. 기존 음성 전송 경로는 `mode=watch` 없이 사용한다. Mock의 최초 보기는 진행 중인 회의에 공유 가상 재생을 한 번 시작한다.
 
 해당 회의의 partial/final/speaker/correction/error 이벤트를 전달한다. `meeting.changed`는 제목·회의 상태·화자 이름/합치기/개별 지정·수동 발언 교정 저장 이후 전송하는 재조회 알림이며 본문을 포함하지 않는다. 클라이언트는 연결 완료·재연결·변경·stream.stopped 시 회의/전사/화자 매핑을 조회한다. `stream.stopped`는 개별 음성 연결 종료일 수도 있으므로 회의 종료 여부는 REST 상태로 확인한다. 보기 연결은 이 이벤트로 자동 종료하지 않는다. 소켓 단절·로그아웃은 보기 연결만 정리한다. 기존 녹음 기기 세션의 로그아웃 종료 정책은 유지한다.
+## 2026-11-12 전사 연결 복구 이벤트
+
+- 클라이언트 제어 `stream.ping`에 서버가 `stream.pong`으로 응답한다. 전사·화자 데이터가 없을 때도 연결 응답 확인에 사용한다. 녹음 기기의 PCM 입력은 별도 유휴 감시 대상이다.
+- `stream.retry`: 이전 전사 세션의 종료·정산 대기 또는 재연결 가능한 전사 종료. 브라우저는 녹음을 유지하며 지수 지연으로 최대 12회 연속 재시도한다. 이 이벤트는 새 유료 연결의 성공을 의미하지 않는다.
+- `stream.error`: 예산·시간·인증 등으로 자동 재시도를 멈추고 사용자 조치 후 수동 재연결을 기다린다. 공급자 원문 응답과 비밀 값은 전송하지 않는다.
+
+## 녹음 파일 업로드와 요약 진행률
+
+- `POST /meetings/import?title=...&format=m4a&topicId=...`은 `application/octet-stream` 본문으로 최대 256 MiB를 받는다. `topicId`는 선택이다. 원본과 작업을 저장한 뒤 `202`와 회의 객체를 반환한다. 업로드 회의의 입력 모드는 `IMPORTED_RECORDING`이다.
+- `GET /meetings/{id}/import`는 `{state,error}`를 반환한다. 작업은 `QUEUED → TRANSCRIBING → SUMMARY_QUEUED → SUMMARIZING → COMPLETED` 순서로 진행한다. `POST /meetings/{id}/import/retry`는 `TRANSCRIPTION_FAILED`는 전사부터, `SUMMARY_FAILED`는 저장된 전사로 요약부터 다시 요청한다.
+- `GET /meetings/{id}/summary/progress`는 `{stage,percent,completedChunks,totalChunks}`를 반환한다. 진행 중인 작업이 없으면 `IDLE`이다. 각 구간의 응답 검증, 통합, 저장이 끝날 때 값이 갱신된다. 요약 생성 응답이 성공하면 저장이 끝난 것이다.
+- `GET /meetings/{id}/export?format=docx|hwp|pdf`는 저장된 회의록을 지정한 형식의 첨부로 반환한다. 전사가 없는 회의는 `409 NO_TRANSCRIPT`를 반환한다. 파일 생성 중 AI를 다시 호출하지 않는다.

@@ -24,7 +24,7 @@ import java.util.regex.Pattern;
 
 /** Builds Responses API payloads and validates structured meeting-AI results without making API calls. */
 public final class MeetingAiPayloads {
-    private static final String MODEL = "gpt-6.1-sol";
+    static final String MODEL = "gpt-6.2-sol";
     private static final String INVALID_INPUT = "Invalid OpenAI request input";
     private static final String INVALID_RESPONSE = "Invalid OpenAI response";
     private static final int MAX_SEGMENTS = 100;

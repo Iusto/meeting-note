@@ -66,7 +66,8 @@ public final class CodexBridgeClient {
             case "CODEX_USAGE_UNAVAILABLE" -> "Codex 사용량을 조회하지 못했습니다. PC의 Codex 로그인과 연결을 확인하고 다시 시도하세요.";
             case "CODEX_LOGIN_REQUIRED" -> "서버 PC의 Codex 로그인이 필요합니다. ChatGPT 계정으로 다시 로그인하세요.";
             case "CODEX_LIMIT_REACHED" -> "Codex 요금제의 사용 한도에 도달했습니다. 한도가 회복된 뒤 다시 시도하세요.";
-            case "CODEX_MODEL_UNAVAILABLE" -> "Codex에서 GPT-6.1 Sol을 사용할 수 없습니다. 계정의 모델 접근 권한을 확인하세요.";
+            case "CODEX_MODEL_UNAVAILABLE" -> "Codex에서 " + MeetingAiPayloads.MODEL
+                    + " 모델을 사용할 수 없습니다. 계정의 모델 접근 권한을 확인하세요.";
             case "CODEX_TIMEOUT" -> "Codex 요약 시간이 초과되었습니다. 잠시 후 다시 확인하세요.";
             case "AI_BUSY" -> "다른 AI 작업이 진행 중입니다. 완료된 뒤 다시 시도하세요.";
             default -> "서버 PC의 Codex 작업을 완료하지 못했습니다. Codex 연결과 로그인 상태를 확인하세요.";

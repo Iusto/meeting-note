@@ -2,27 +2,25 @@
 
 ## Windows private deployment
 
-After starting Docker Desktop's Linux engine and signing in to Tailscale, run from a normal Windows PowerShell:
+Use Docker Desktop's WSL 2 Linux backend with NVIDIA GPU support and sign in to Tailscale. Install Node.js and the Codex CLI, and run `codex login` with ChatGPT. For regular use, run `start-meeting.bat` from the repository root. The equivalent PowerShell command starts AI mode and opens a new meeting.
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\portfolio\ai-meeting-codex\scripts\start-private.ps1
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-private.ps1 -EnableAi -OpenMeeting
 ```
 
-The script checks both services, detects the MagicDNS hostname, creates `.env` with random secrets only when absent, builds/starts Compose, checks that the local API rejects unauthenticated access, and configures private Tailscale Serve. Existing `.env` files and Docker data are retained. The default command forces paid APIs off even if the shell or `.env` enables them; inherited shell settings are restored afterward. First builds download container images and dependencies. If Tailscale asks to enable HTTPS/Serve, complete its displayed link and rerun. Existing Serve configuration may require an interactive confirmation; the script does not pass `--yes` or reset it.
+The script checks both services, detects the MagicDNS hostname, creates `.env` with random secrets only when absent, starts Compose, checks that the local API rejects unauthenticated access, and configures private Tailscale Serve. If Tailscale prompts you to enable HTTPS/Serve or approve a configuration change, follow its prompt and rerun the launcher.
 
-To activate Deepgram transcription and Codex subscription summaries, keep `DEEPGRAM_API_KEY` in the current process or Windows user environment, install Node.js/Codex CLI, run `codex login` with ChatGPT, and opt in explicitly:
+To start the private demo and microphone recording without AI, run the following command from the repository root. This mode disables paid APIs. Both modes retain existing `.env` files and Docker data.
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\portfolio\ai-meeting-codex\scripts\start-private.ps1 -EnablePaidAi
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\start-private.ps1
 ```
 
-The script starts a hidden Windows bridge and uses the existing ChatGPT login to run `codex exec` with `gpt-6.1-sol`. It passes a private bridge token to Docker and clears `OPENAI_API_KEY` for this deployment. Keep this PC and the bridge running; subscription availability and usage limits still apply. A summary sends the selected transcript to OpenAI through Codex; the model does not run locally. The bridge disables tools, uses ephemeral sessions and temporary schema/results, and never falls back to the paid API. It accepts authenticated requests on port 8767 for Docker access; do not publish that port through Tailscale Serve or a public proxy.
+The launcher loads Whisper large-v3 on the local GPU and waits for the model readiness check. On first start the model downloads into a Docker cache volume. The launcher starts an authenticated local Codex bridge for summaries, corrections, and glossary candidates using the ChatGPT login. Transcripts sent for generation use the Codex subscription allowance. The private bridge listens on port 8767 for Docker access.
 
-Deepgram remains separately billed and subject to the app's dollar budget. Codex summaries/corrections/term candidates do not reserve API dollars; previous API usage records remain visible. The app monthly budget defaults to `0 USD`; save a positive budget before LIVE. To explicitly retain the original paid OpenAI path, supply `OPENAI_API_KEY` and add `-UseOpenAiApi`. The script never prints keys and restores the caller environment.
+The Usage page shows account-wide Codex remaining percentages and reset times, along with recording retention and transcription duration settings. Requests for account limits are cached for 30 seconds and do not generate a model response.
 
-The Usage page reads account-wide Codex remaining percentages and reset times through the CLI's `account/rateLimits/read` method. Reads are cached for 30 seconds and do not generate a model response. Missing values remain unknown; a read failure never appears as a full allowance. Deepgram budgets and recording retention settings are collapsed below the subscription view.
-
-The printed HTTPS address still needs login/microphone verification from another device on the tailnet. Use `APP_OWNER_TOKEN` from the local `.env` once to register the owner username/password, then sign in with those credentials. Remembered sessions last up to 30 days across API restarts; do not paste credentials into chat. Docker uses its own database/recording volumes; it does not import the development database. If Codex reports access denied on Docker/Tailscale named pipes, run the command outside the restricted agent session. Isolated mock checks:
+On another tailnet device, open the printed HTTPS address, sign in, and check microphone access. Use `APP_OWNER_TOKEN` from the local `.env` once to register the owner username/password, then sign in with those credentials. Remembered sessions last up to 30 days across API restarts; do not paste credentials into chat. Docker uses its own database/recording volumes; it does not import the development database. If Codex reports access denied on Docker/Tailscale named pipes, run the command outside the restricted agent session. Isolated mock checks:
 
 ```powershell
 python -m unittest discover -s tests/ops -p test_start_private.py -v
@@ -37,7 +35,7 @@ These standalone commands do not start Spring or enable AI in the application. T
 From the repository root, an OpenAI preflight using the committed fictional transcript:
 
 ```powershell
-powershell.exe -NoProfile -File scripts/run-openai-poc.ps1 --input examples/openai-poc-synthetic.json --output .tools/openai-preflight.json --timeout-seconds 30 --output-token-cap 1000 --max-usd 0.05 --input-usd-per-million 2 --output-usd-per-million 10 --price-version official-2026-10-21
+powershell.exe -NoProfile -File scripts/run-openai-poc.ps1 --input examples/openai-poc-synthetic.json --output .tools/openai-preflight.json --timeout-seconds 30 --output-token-cap 1000 --max-usd 0.05 --input-usd-per-million 2 --output-usd-per-million 10 --price-version official-2026-11-27
 ```
 
 Deepgram requires approved fictional speech encoded as **raw signed little-endian PCM16, 16 kHz, mono**, with `.pcm`/`.raw` extension. A downloaded WebM/Ogg or a WAV container cannot be renamed to PCM. The following is also only preflight; the inclusive rate uses the regular-price scenario in [cost policy](../docs/09-COST.md).
@@ -107,8 +105,6 @@ python scripts/estimate_cost.py examples/cost-scenario-assumptions.json
 
 Results include the input rates, STT/LLM subtotals, budget excess, and affordable hours. Costs round up to six decimal places; remaining budget and affordable hours round down. Inputs must be finite and nonnegative, at most 1,000,000,000 with at most 12 decimal places. The evaluation test command above covers both tools.
 
-## 회의 시작 바로가기 (2026-10-29)
+## 회의 시작 바로가기
 
-서버 PC에서 루트의 `start-meeting.bat`을 더블클릭한다. 기존 `start-private.ps1 -EnablePaidAi -OpenMeeting`을 실행하여 Docker Linux 엔진, Tailscale 로그인, 두 공급자 키를 확인하고 이미지를 빌드·기동한 뒤 private HTTPS 새 회의 화면을 연다. Docker Desktop과 Tailscale은 미리 실행해야 하며 최초 빌드는 시간이 걸린다. 실행 오류는 창에 남는다. 배포가 컨테이너를 교체할 수 있으므로 진행 중인 녹음에서는 실행하지 않는다.
-
-브라우저에서 로그인 → 사용량의 월 잔액·회당 상한 확인 → 새 회의의 LIVE 선택 → 마이크 선택·녹음 시작 순으로 진행한다. 실행기는 인증된 예산이나 실제 공급자 접속 성공을 보장하지 않으며 녹음이나 유료 API 호출을 자동 시작하지 않는다. 타 PC에서는 Tailscale 연결 후 콘솔에 표시된 HTTPS 주소를 연다. 브라우저는 서버 PC에 열린다.
+서버 PC에서 루트의 `start-meeting.bat`을 더블클릭한다. `start-private.ps1 -EnableAi -OpenMeeting`이 로컬 Whisper와 Codex bridge를 시작하고 비공개 HTTPS 새 회의 화면을 연다. 브라우저에 로그인한 뒤 로컬 Whisper 전사 또는 녹음 파일 업로드를 선택한다. 배포가 컨테이너를 교체할 수 있으므로 실행 전 진행 중인 녹음을 종료한다.

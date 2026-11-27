@@ -26,6 +26,7 @@ services:
       PAID_API_TESTS_ENABLED: ${PAID_API_TESTS_ENABLED:-false}
       DEEPGRAM_API_KEY: ${DEEPGRAM_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      AI_SPEECH_PROVIDER: ${AI_SPEECH_PROVIDER:-deepgram}
       AI_LLM_PROVIDER: ${AI_LLM_PROVIDER:-openai}
       CODEX_BRIDGE_URL: http://host.docker.internal:8767/generate
       CODEX_BRIDGE_TOKEN: ${CODEX_BRIDGE_TOKEN:-}

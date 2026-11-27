@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { ApiError } from './api'
 import { knowledgeApi } from './knowledgeApi'
-import type { CorrectionSuggestion, MeetingSummary } from './knowledgeApi'
+import type { CorrectionSuggestion, MeetingSummary, SummaryProgress } from './knowledgeApi'
 import type { AiConfiguration, TranscriptSegment } from './types'
 
 const EvidenceContext = createContext<Record<string, { time: string; speaker: string; text: string }>>({})
@@ -11,13 +11,23 @@ function Sources({ ids }: { ids: string[] }) {
   return <details className="mt-2 text-xs text-slate-500"><summary className="cursor-pointer font-bold text-moss">근거 발언 {ids.length}개 보기</summary><ul className="mt-2 space-y-2">{ids.map(id => <li key={id}><a className="font-bold text-moss underline" href={`#segment-${id}`}>{evidence[id] ? `${evidence[id].time} · ${evidence[id].speaker}` : '원문 발언 보기'}</a>{evidence[id] && <p className="mt-1 leading-5">{evidence[id].text}</p>}</li>)}</ul></details>
 }
 
-export function SummaryPanel({ meetingId, stopped, transcriptKey, hasTopic, aiConfiguration, onChanged, segments = [], speakerName }: { meetingId: string; stopped: boolean; transcriptKey: string; hasTopic: boolean; aiConfiguration?: AiConfiguration; onChanged: () => Promise<void>; segments?: TranscriptSegment[]; speakerName?: (label?: string | null) => string }) {
+export function SummaryPanel({ meetingId, stopped, transcriptKey, hasTopic, aiConfiguration, importProcessing, onChanged, segments = [], speakerName }: { meetingId: string; stopped: boolean; transcriptKey: string; hasTopic: boolean; aiConfiguration?: AiConfiguration; importProcessing?: boolean; onChanged: () => Promise<void>; segments?: TranscriptSegment[]; speakerName?: (label?: string | null) => string }) {
   const [summary, setSummary] = useState<MeetingSummary>()
   const [suggestions, setSuggestions] = useState<CorrectionSuggestion[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [startedAt, setStartedAt] = useState<number>()
+  const [finished, setFinished] = useState(false)
+  const [elapsed, setElapsed] = useState(0)
+  const [progress, setProgress] = useState<SummaryProgress>()
+  const activeProgress = progress && progress.stage !== 'IDLE' && progress.stage !== 'COMPLETED'
+  const generating = startedAt !== undefined || activeProgress || importProcessing
+  const stageLabel = progress?.stage === 'CHUNKS'
+    ? (progress.totalChunks === 1 ? 'AI가 전사문을 읽고 요약을 작성하는 중' : '전사 구간 처리 ' + progress.completedChunks + '/' + progress.totalChunks)
+    : progress?.stage === 'SYNTHESIS' ? '구간별 요약을 회의록으로 합치는 중'
+      : progress?.stage === 'SAVING' ? '요약과 회의록 저장 중' : '요약 작업 준비 중'
   const codex = aiConfiguration?.llmProvider === 'CODEX'
-  const paidLlm = Boolean(aiConfiguration?.enabled && aiConfiguration.llmAvailable)
+  const realLlm = Boolean(aiConfiguration?.llmAvailable)
   useEffect(() => {
     let active = true
     knowledgeApi.summary(meetingId).then((value) => { if (active) setSummary(value) }).catch((caught) => {
@@ -27,6 +37,52 @@ export function SummaryPanel({ meetingId, stopped, transcriptKey, hasTopic, aiCo
     })
     return () => { active = false }
   }, [meetingId, transcriptKey])
+
+  useEffect(() => {
+    if (!stopped || (!transcriptKey && !importProcessing)) return
+    const controller = new AbortController()
+    let hadActiveJob = false
+    let timer: number
+    const poll = async () => {
+      try {
+        const value = await knowledgeApi.summaryProgress(meetingId, controller.signal)
+        if (controller.signal.aborted) return
+        setProgress(value)
+        const activeJob = value.stage !== 'IDLE' && value.stage !== 'COMPLETED'
+        const jobEnded = hadActiveJob && !activeJob
+        hadActiveJob = activeJob
+        if (jobEnded) {
+          const saved = await knowledgeApi.summary(meetingId)
+          if (!controller.signal.aborted) setSummary(saved)
+        }
+      } catch {
+        // The generate request and import status report errors for the job itself.
+      } finally {
+        if (!controller.signal.aborted) timer = window.setTimeout(poll, hadActiveJob ? 1000 : 2000)
+      }
+    }
+    void poll()
+    return () => { controller.abort(); window.clearTimeout(timer) }
+  }, [meetingId, stopped, transcriptKey, importProcessing])
+
+  useEffect(() => {
+    if (startedAt === undefined) return
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000)
+    return () => window.clearInterval(timer)
+  }, [startedAt])
+
+  async function generate() {
+    setProgress(undefined)
+    setFinished(false)
+    setElapsed(0)
+    setStartedAt(Date.now())
+    try {
+      await act(async () => {
+        setSummary(await knowledgeApi.generateSummary(meetingId))
+        setFinished(true)
+      })
+    } finally { setStartedAt(undefined) }
+  }
 
   async function act(action: () => Promise<void>) {
     setBusy(true); setError('')
@@ -41,12 +97,20 @@ export function SummaryPanel({ meetingId, stopped, transcriptKey, hasTopic, aiCo
   }]))
   return <EvidenceContext.Provider value={evidence}><section className="space-y-4 rounded-3xl border border-moss/10 bg-white p-6" aria-label="요약과 검토">
     <h2 className="text-xl font-black">요약과 검토</h2>
-    <p className="text-sm leading-6 text-slate-500">{codex ? '요약·교정은 서버 PC의 Codex 요금제로 처리합니다. 별도 OpenAI API 요금은 없으며 Codex 사용 한도를 소비합니다. PC와 Codex 로그인이 유지되어야 합니다.' : paidLlm ? '요약과 교정 버튼을 누르면 유료 AI 요청이 발생할 수 있습니다. 자동으로 제출하지 않으며, 결과는 항상 원문 근거와 함께 검토하세요.' : '현재 요약은 확정 발언을 인용하는 가상 결과입니다. 실제 AI의 요약·교정 품질을 나타내지 않습니다.'} 원문 근거 없이 결정·담당자·기한을 만들지 않습니다.</p>
-    {busy && <p role="status" className="text-sm font-bold text-moss">{codex ? 'Codex가 처리 중입니다. 긴 회의는 몇 분 걸릴 수 있습니다.' : 'AI가 처리 중입니다.'}</p>}
+    <p className="text-sm leading-6 text-slate-500">{codex ? '요약·교정은 서버 PC의 Codex 요금제로 처리합니다. 별도 OpenAI API 요금은 없으며 Codex 사용 한도를 소비합니다. PC와 Codex 로그인이 유지되어야 합니다.' : realLlm ? '요약과 교정 버튼을 누르면 유료 AI 요청이 발생할 수 있습니다. 자동으로 제출하지 않으며, 결과는 항상 원문 근거와 함께 검토하세요.' : '현재 요약은 확정 발언을 인용하는 가상 결과입니다. 실제 AI의 요약·교정 품질을 나타내지 않습니다.'} 원문 근거 없이 결정·담당자·기한을 만들지 않습니다.</p>
+    {(startedAt !== undefined || activeProgress) && <div className="space-y-2 rounded-xl bg-cream p-3">
+      <div className="flex items-baseline justify-between gap-3 text-sm font-bold text-moss">
+        <span role="status">{stageLabel}</span><span>{activeProgress ? progress.percent : 0}%</span>
+      </div>
+      <progress className="h-2 w-full accent-moss" value={activeProgress ? progress.percent : 0} max={100} aria-label="AI 요약 진행률" />
+      {startedAt !== undefined && <p className="text-xs text-slate-500">경과 {Math.floor(elapsed / 60)}분 {elapsed % 60}초</p>}
+    </div>}
+    {finished && !generating && <p role="status" className="text-sm font-bold text-moss">요약 저장 완료 · 100%</p>}
+    {busy && startedAt === undefined && <p role="status" className="text-sm font-bold text-moss">{codex ? 'Codex가 처리 중입니다. 긴 회의는 몇 분 걸릴 수 있습니다.' : 'AI가 처리 중입니다.'}</p>}
     {error && <p role="alert" className="rounded-xl bg-red-50 p-3 text-sm text-red-700">{error}</p>}
     <div className="flex flex-wrap gap-3">
-      <button className="button-secondary" disabled={busy || !stopped || !transcriptKey} onClick={() => void act(async () => { setSummary(await knowledgeApi.generateSummary(meetingId)) })}>{summary ? `${paidLlm ? 'AI' : '가상'} 요약 다시 생성` : `${paidLlm ? 'AI' : '가상'} 요약 생성`}</button>
-      <button className="button-secondary" disabled={busy || !stopped || !hasTopic || !transcriptKey} onClick={() => void act(async () => { setSuggestions(await knowledgeApi.corrections(meetingId)) })}>{paidLlm ? 'AI 사전 교정 후보 확인' : '사전 교정 후보 확인'}</button>
+      <button className="button-secondary" disabled={busy || generating || !stopped || !transcriptKey} onClick={() => void generate()}>{summary ? `${realLlm ? 'AI' : '가상'} 요약 다시 생성` : `${realLlm ? 'AI' : '가상'} 요약 생성`}</button>
+      <button className="button-secondary" disabled={busy || generating || !stopped || !hasTopic || !transcriptKey} onClick={() => void act(async () => { setSuggestions(await knowledgeApi.corrections(meetingId)) })}>{realLlm ? 'AI 사전 교정 후보 확인' : '사전 교정 후보 확인'}</button>
     </div>
     {!hasTopic && <p className="text-xs text-slate-500">주제가 있는 회의에서 승인된 사전의 교정 후보를 확인할 수 있습니다.</p>}
     {summary && <section className="rounded-2xl bg-cream p-5" aria-label="저장된 요약">

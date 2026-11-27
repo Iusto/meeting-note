@@ -2,6 +2,7 @@ package dev.aimeeting.api.provider.deepgram;
 
 import dev.aimeeting.api.meeting.MeetingRepository;
 import dev.aimeeting.api.provider.SpeechEvent;
+import dev.aimeeting.api.provider.LiveSpeechSession;
 import dev.aimeeting.api.topic.TopicRepository;
 import dev.aimeeting.api.usage.ledger.CostLedgerService;
 import dev.aimeeting.api.usage.ledger.ReservationRequest;
@@ -25,7 +26,7 @@ import java.util.function.Consumer;
  * Not a Spring bean: production activation still requires the real-audio quality gate.
  * Input is a new, continuous signed little-endian PCM16, 16 kHz, mono stream per session.
  */
-public final class DeepgramMeetingPoc implements AutoCloseable {
+public final class DeepgramMeetingPoc implements AutoCloseable, LiveSpeechSession {
     @FunctionalInterface
     interface SessionCloser {
         void close(UUID sessionId, String reason);
@@ -357,6 +358,10 @@ public final class DeepgramMeetingPoc implements AutoCloseable {
     }
 
     public CompletableFuture<DeepgramPocSession.StopReason> completion() { return completion.copy(); }
+    @Override public CompletableFuture<Outcome> outcome() {
+        return completion.thenApply(reason -> new Outcome(reason.name(),
+                reason != DeepgramPocSession.StopReason.COMPLETED && reason != DeepgramPocSession.StopReason.USER_STOP));
+    }
     public UUID streamSessionId() { return sessionId; }
 
     @Override public synchronized void close() {

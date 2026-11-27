@@ -163,6 +163,21 @@ public class MeetingRepository {
     }
 
     @Transactional
+    public Meeting createFromRecording(String title, UUID topicId) {
+        Meeting meeting = create(title, InputSource.IMPORTED_RECORDING, topicId);
+        jdbc.update("UPDATE meetings SET status='STOPPED', ended_at=? WHERE id=?",
+                OffsetDateTime.now(ZoneOffset.UTC), meeting.id());
+        return find(meeting.id());
+    }
+
+    public boolean hasRunningRecordingImport(UUID meetingId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject("""
+                SELECT COUNT(*) > 0 FROM recording_imports WHERE meeting_id=?
+                    AND state IN ('TRANSCRIBING', 'SUMMARIZING')
+                """, Boolean.class, meetingId));
+    }
+
+    @Transactional
     public Meeting updateTitle(UUID id, String title, int expectedRevision) {
         Meeting current = lock(id);
         if (current.revision() != expectedRevision) {
@@ -222,6 +237,11 @@ public class MeetingRepository {
         if (jdbc.update("DELETE FROM meetings WHERE id=?", id) != 1) {
             throw new ApiException(HttpStatus.NOT_FOUND, "MEETING_NOT_FOUND", "Meeting was not found");
         }
+    }
+
+    public boolean hasActiveDeepgramSession(UUID meetingId) {
+        return Boolean.TRUE.equals(jdbc.queryForObject(
+                "SELECT COUNT(*) > 0 FROM active_deepgram_sessions WHERE meeting_id=?", Boolean.class, meetingId));
     }
 
     public UUID createStreamSession(UUID meetingId) {
@@ -365,13 +385,27 @@ public class MeetingRepository {
 
     @Transactional
     public List<TranscriptSegment> insertFinalBatchIfAbsent(UUID meetingId, List<FinalSegmentInput> inputs) {
+        return insertFinalBatch(lock(meetingId), inputs, false);
+    }
+
+    @Transactional
+    public List<TranscriptSegment> insertImportedTranscript(UUID meetingId, List<FinalSegmentInput> inputs) {
+        Meeting meeting = lock(meetingId);
+        if (!"IMPORTED_RECORDING".equals(meeting.inputSource()) || !"STOPPED".equals(meeting.status())) {
+            throw new ApiException(HttpStatus.CONFLICT, "TRANSCRIPT_CLOSED", "Meeting is not a recording import");
+        }
+        return insertFinalBatch(meeting, inputs, true);
+    }
+
+    private List<TranscriptSegment> insertFinalBatch(Meeting meeting, List<FinalSegmentInput> inputs,
+                                                     boolean allowStopped) {
         if (inputs == null || inputs.isEmpty() || inputs.size() > MAX_FINAL_BATCH_SEGMENTS) {
             throw new IllegalArgumentException("final segment batch must contain 1 to 10000 items");
         }
         List<FinalSegmentInput> batch = List.copyOf(inputs);
-        Meeting meeting = lock(meetingId);
+        UUID meetingId = meeting.id();
         if (findByEvent(meetingId, batch.getFirst().eventId()) != null) return List.of();
-        if ("STOPPED".equals(meeting.status())) {
+        if (!allowStopped && "STOPPED".equals(meeting.status())) {
             throw new ApiException(HttpStatus.CONFLICT, "TRANSCRIPT_CLOSED", "Stopped meeting transcripts cannot accept new final segments");
         }
 

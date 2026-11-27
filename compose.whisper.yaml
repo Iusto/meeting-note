@@ -1,0 +1,30 @@
+services:
+  whisper:
+    build: ./apps/whisper
+    volumes:
+      - whisper_models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8768/health', timeout=2).close()"]
+      interval: 10s
+      timeout: 3s
+      start_period: 10m
+      retries: 12
+    restart: unless-stopped
+  api:
+    environment:
+      AI_SPEECH_PROVIDER: whisper
+      PAID_API_TESTS_ENABLED: 'false'
+      DEEPGRAM_API_KEY: ''
+      OPENAI_API_KEY: ''
+    depends_on:
+      whisper:
+        condition: service_healthy
+volumes:
+  whisper_models:

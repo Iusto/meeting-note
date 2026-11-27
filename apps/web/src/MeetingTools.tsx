@@ -5,7 +5,10 @@ import { acquireRecordingLock } from './recording'
 import { removeLocalRecording } from './recordingStore'
 import { AppLink, navigate } from './router'
 
-export function MeetingTools({ meeting, onChanged, onUnauthorized }: { meeting: Meeting; onChanged: (meeting: Meeting) => void; onUnauthorized: () => void }) {
+type OfficeFormat = 'docx' | 'hwp' | 'pdf'
+
+export function MeetingTools({ documentDisabled, meeting, onChanged, onUnauthorized }: { documentDisabled?: boolean; meeting: Meeting; onChanged: (meeting: Meeting) => void; onUnauthorized: () => void }) {
+  const [documentFormat, setDocumentFormat] = useState<OfficeFormat>('docx')
   const [editing, setEditing] = useState(false)
   const [title, setTitle] = useState('')
   const [revision, setRevision] = useState(meeting.revision)
@@ -30,12 +33,15 @@ export function MeetingTools({ meeting, onChanged, onUnauthorized }: { meeting: 
     } finally { setBusy(false) }
   }
 
-  async function download(format: 'json' | 'markdown') {
+  async function download(format: 'json' | 'markdown' | OfficeFormat) {
     const response = await fetch(`/api/v1/meetings/${meeting.id}/export?format=${format}`, { credentials: 'include' })
-    if (!response.ok) throw new ApiError('내보내기에 실패했습니다. 다시 시도하세요.', response.status)
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null)
+      throw new ApiError(payload?.message ?? '내보내기에 실패했습니다. 다시 시도하세요.', response.status)
+    }
     const url = URL.createObjectURL(await response.blob())
     const link = document.createElement('a')
-    link.href = url; link.download = `meeting-${meeting.id}.${format === 'json' ? 'json' : 'md'}`
+    link.href = url; link.download = `meeting-${meeting.id}.${format === 'markdown' ? 'md' : format}`
     document.body.append(link); link.click(); link.remove()
     window.setTimeout(() => URL.revokeObjectURL(url), 1000)
     setNotice('회의 파일을 내보냈습니다.')
@@ -64,7 +70,15 @@ export function MeetingTools({ meeting, onChanged, onUnauthorized }: { meeting: 
       {!editing && <button className="button-secondary" disabled={busy} onClick={() => { setTitle(meeting.title); setRevision(meeting.revision); setEditing(true); setConfirmingDelete(false); setError(''); setNotice('') }}>제목 수정</button>}
       <button className="button-secondary" disabled={busy} onClick={() => void act(() => download('markdown'))}>Markdown 내보내기</button>
       <button className="button-secondary" disabled={busy} onClick={() => void act(() => download('json'))}>JSON 내보내기</button>
-      <button className="button-secondary text-red-700" disabled={busy || meeting.status === 'STARTED'} onClick={() => { setDeleteTitle(meeting.title); setDeleteRevision(meeting.revision); setConfirmation(''); setConfirmingDelete(true); setEditing(false); setError(''); setNotice('') }}>회의 삭제</button>
+      <button className="button-secondary text-red-700" disabled={busy || documentDisabled || meeting.status === 'STARTED'} onClick={() => { setDeleteTitle(meeting.title); setDeleteRevision(meeting.revision); setConfirmation(''); setConfirmingDelete(true); setEditing(false); setError(''); setNotice('') }}>회의 삭제</button>
+    </div>
+    <div className="mt-3 flex flex-wrap items-center gap-3">
+      <select className="button-secondary" aria-label="회의록 파일 형식" value={documentFormat} disabled={busy || documentDisabled} onChange={(event) => setDocumentFormat(event.target.value as OfficeFormat)}>
+        <option value="docx">Word (.docx)</option>
+        <option value="hwp">한글 (.hwp)</option>
+        <option value="pdf">PDF (.pdf)</option>
+      </select>
+      <button className="button-primary" disabled={busy || documentDisabled} onClick={() => void act(() => download(documentFormat))}>회의록 다운로드</button>
     </div>
     {editing && <form className="mt-4 space-y-3" onSubmit={(event) => { event.preventDefault(); void act(async () => { const updated = await api.updateMeeting(meeting.id, title.trim(), revision); onChanged(updated); setEditing(false); setNotice('제목을 저장했습니다.') }) }}>
       <label htmlFor="edit-meeting-title" className="block text-sm font-bold">새 회의 제목</label>

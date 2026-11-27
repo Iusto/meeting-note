@@ -3,6 +3,8 @@ package dev.aimeeting.api.summary;
 import dev.aimeeting.api.provider.openai.MeetingAiApplicationService;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import org.springframework.http.CacheControl;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -21,6 +23,10 @@ public class SummaryController {
     }
 
     @GetMapping public MeetingSummary latest(@PathVariable UUID meetingId) { return summaries.latest(meetingId); }
+    @GetMapping("/progress")
+    public ResponseEntity<SummaryProgress> progress(@PathVariable UUID meetingId) {
+        return ResponseEntity.ok().cacheControl(CacheControl.noStore()).body(ai.summaryProgress(meetingId));
+    }
     @PostMapping public CompletableFuture<MeetingSummary> generate(@PathVariable UUID meetingId) {
         return ai.enabled() ? ai.generateSummary(meetingId)
                 : CompletableFuture.completedFuture(summaries.generate(meetingId));

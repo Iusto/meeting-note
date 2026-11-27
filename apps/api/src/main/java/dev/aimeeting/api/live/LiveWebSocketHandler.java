@@ -6,8 +6,11 @@ import dev.aimeeting.api.meeting.MeetingRepository;
 import dev.aimeeting.api.provider.SpeechEvent;
 import dev.aimeeting.api.provider.SpeechProvider;
 import dev.aimeeting.api.provider.deepgram.DeepgramLiveSessionFactory;
-import dev.aimeeting.api.provider.deepgram.DeepgramMeetingPoc;
+import dev.aimeeting.api.config.AiConfiguration;
+import dev.aimeeting.api.provider.LiveSpeechSession;
+import dev.aimeeting.api.provider.whisper.WhisperLiveSessionFactory;
 import dev.aimeeting.api.auth.SessionService;
+import dev.aimeeting.api.web.ApiException;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Map;
@@ -99,19 +102,43 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
     private final MeetingRepository meetings;
     private final SpeechProvider provider;
     private final DeepgramLiveSessionFactory deepgram;
+    private final WhisperLiveSessionFactory whisper;
+    private final AiConfiguration configuration;
     private final ObjectMapper mapper;
     private final SessionService sessions;
     private final ConcurrentHashMap<String, Set<WebSocketSession>> openByAuthSession = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<WebSocketSession, LiveContext> liveContexts = new ConcurrentHashMap<>();
+    private final java.util.function.LongSupplier nanoTime;
+    private static final long INPUT_IDLE_NANOS = java.util.concurrent.TimeUnit.SECONDS.toNanos(20);
 
     @Autowired
     public LiveWebSocketHandler(MeetingRepository meetings, SpeechProvider provider, DeepgramLiveSessionFactory deepgram,
-                                ObjectMapper mapper, SessionService sessions) {
+                                WhisperLiveSessionFactory whisper, AiConfiguration configuration, ObjectMapper mapper,
+                                SessionService sessions) {
+        this(meetings, provider, deepgram, whisper, configuration, mapper, sessions, System::nanoTime);
+    }
+
+    LiveWebSocketHandler(MeetingRepository meetings, SpeechProvider provider, DeepgramLiveSessionFactory deepgram,
+                         ObjectMapper mapper, SessionService sessions) {
+        this(meetings, provider, deepgram, mapper, sessions, System::nanoTime);
+    }
+
+    LiveWebSocketHandler(MeetingRepository meetings, SpeechProvider provider, DeepgramLiveSessionFactory deepgram,
+                         ObjectMapper mapper, SessionService sessions, java.util.function.LongSupplier nanoTime) {
+        this(meetings, provider, deepgram, null, null, mapper, sessions, nanoTime);
+    }
+
+    private LiveWebSocketHandler(MeetingRepository meetings, SpeechProvider provider, DeepgramLiveSessionFactory deepgram,
+                                 WhisperLiveSessionFactory whisper, AiConfiguration configuration, ObjectMapper mapper,
+                                 SessionService sessions, java.util.function.LongSupplier nanoTime) {
         this.meetings = meetings;
         this.provider = provider;
         this.deepgram = deepgram;
+        this.whisper = whisper;
+        this.configuration = configuration;
         this.mapper = mapper;
         this.sessions = sessions;
+        this.nanoTime = nanoTime;
         sessions.onInvalidation(this::closeAuthenticatedSockets);
         sessions.onAllInvalidation(this::closeAllAuthenticatedSockets);
     }
@@ -154,7 +181,7 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
             return;
         }
         if ("LIVE".equals(meeting.inputSource())) {
-            openDeepgram(session, authSessionId, meetingId, audioOffsetMs(session));
+            openLiveSpeech(session, authSessionId, meetingId, audioOffsetMs(session));
             return;
         }
         if ("LOCAL_RECORDING".equals(meeting.inputSource())) {
@@ -172,23 +199,27 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
         provider.stream(meetingId, streamSessionId, event -> sendForContext(session, context, event));
     }
 
-    private void openDeepgram(WebSocketSession session, String authSessionId, UUID meetingId, long audioOffsetMs) {
-        if (deepgram == null) {
+    private void openLiveSpeech(WebSocketSession session, String authSessionId, UUID meetingId, long audioOffsetMs) {
+        boolean useWhisper = configuration != null && configuration.whisperEnabled();
+        if (useWhisper ? whisper == null : deepgram == null) {
             failStream(session, new LiveContext(meetingId, null, true), "Live speech is unavailable");
             return;
         }
         LiveContext context = new LiveContext(meetingId, null, true);
+        context.lastAudioNanos = nanoTime.getAsLong();
         liveContexts.put(session, context);
         if (!isRegistered(authSessionId, session) || !sessions.isValid(authSessionId)) {
             liveContexts.remove(session, context);
             return;
         }
-        CompletableFuture<DeepgramMeetingPoc> opening;
+        CompletableFuture<? extends LiveSpeechSession> opening;
         try {
-            opening = deepgram.open(meetingId, audioOffsetMs, event -> sendForContext(session, context, event));
+            java.util.function.Consumer<SpeechEvent> events = event -> sendForContext(session, context, event);
+            opening = useWhisper ? whisper.open(meetingId, audioOffsetMs, events)
+                    : deepgram.open(meetingId, audioOffsetMs, events);
         } catch (RuntimeException failure) {
             liveContexts.remove(session, context);
-            failStream(session, context, speechFailure(failure));
+            failOpening(session, context, failure);
             return;
         }
         synchronized (session) {
@@ -196,13 +227,12 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
             if (liveContexts.get(session) != context || !isRegistered(authSessionId, session)
                     || !sessions.isValid(authSessionId)) {
                 opening.cancel(true);
-                return;
             }
         }
         opening.whenComplete((live, failure) -> {
             if (failure != null) {
                 if (liveContexts.remove(session, context)) {
-                    failStream(session, context, speechFailure(failure));
+                    failOpening(session, context, failure);
                 }
                 return;
             }
@@ -213,14 +243,16 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
                     return;
                 }
                 context.live = live;
+                context.lastAudioNanos = nanoTime.getAsLong();
                 context.streamSessionId = live.streamSessionId();
                 sendForContext(session, context, SpeechEvent.sessionReady(meetingId, live.streamSessionId()));
             }
-            live.completion().whenComplete((reason, completionFailure) -> {
+            live.outcome().whenComplete((outcome, completionFailure) -> {
                 if (liveContexts.remove(session, context)) {
-                    SpeechEvent completed = new SpeechEvent(completionFailure == null ? "stream.stopped" : "stream.error",
+                    boolean retry = completionFailure != null || outcome.retry();
+                    SpeechEvent completed = new SpeechEvent(retry ? "stream.retry" : "stream.stopped",
                             meetingId, live.streamSessionId(), null, null, null, null, null, null, null,
-                            null, null, null, null, completionFailure == null ? reason.name() : "PROVIDER_ERROR");
+                            null, null, null, null, completionFailure == null ? outcome.reason() : "PROVIDER_ERROR");
                     send(session, completed);
                     publish(completed);
                 }
@@ -231,11 +263,12 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
     @Override
     protected void handleBinaryMessage(WebSocketSession session, BinaryMessage message) {
         LiveContext context = liveContexts.get(session);
-        if (context == null || !context.deepgram || context.live == null) {
+        if (context == null || !context.audioStream || context.live == null) {
             closeWithError(session, "Speech session is not ready");
             return;
         }
         ByteBuffer payload = message.getPayload();
+        context.lastAudioNanos = nanoTime.getAsLong();
         byte[] pcm = new byte[payload.remaining()];
         payload.get(pcm);
         context.live.sendAudio(pcm).whenComplete((ignored, failure) -> {
@@ -249,11 +282,17 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
     @Override
     protected void handleTextMessage(WebSocketSession session, TextMessage message) {
         LiveContext context = liveContexts.get(session);
-        if (context == null || !context.deepgram || context.live == null) return;
+        if (context == null || !context.audioStream || context.live == null) return;
         try {
             Map<?, ?> control = mapper.readValue(message.getPayload(), Map.class);
-            if ("stream.stop".equals(control.get("type"))) context.live.finish();
-            else if ("stream.ping".equals(control.get("type"))) context.live.keepAlive();
+            if ("stream.stop".equals(control.get("type"))) {
+                context.finishing = true;
+                context.live.finish();
+            }
+            else if ("stream.ping".equals(control.get("type"))) {
+                send(session, new SpeechEvent("stream.pong", context.meetingId, context.streamSessionId,
+                        null, null, null, null, null, null, null, null, null, null, null, null));
+            }
         } catch (IOException ignored) {
             closeWithError(session, "Invalid stream control message");
         }
@@ -266,6 +305,27 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
             String authSessionId = (String) session.getAttributes().get("authSessionId");
             unregister(session, authSessionId);
         }
+    }
+
+    @Override
+    public void handleTransportError(WebSocketSession session, Throwable exception) {
+        afterConnectionClosed(session, CloseStatus.SERVER_ERROR);
+        closeWithError(session, "Recording transport disconnected");
+    }
+
+    @Scheduled(fixedDelay = 2000)
+    void expireIdleAudioConnections() {
+        long now = nanoTime.getAsLong();
+        liveContexts.forEach((session, context) -> {
+            synchronized (session) {
+                if (!context.audioStream || context.live == null || context.finishing || now - context.lastAudioNanos < INPUT_IDLE_NANOS
+                        || liveContexts.get(session) != context) return;
+                // Provider finalization owns usage settlement and claim release. Keep the meeting/recorder running.
+                terminate(session, "SOCKET_CLOSED");
+                sendRetry(session, context, "음성 연결이 끊겨 다시 연결합니다. 원본 녹음은 계속됩니다.");
+                unregister(session, (String) session.getAttributes().get("authSessionId"));
+            }
+        });
     }
 
     private void closeAuthenticatedSockets(String authSessionId) {
@@ -326,9 +386,9 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
         LiveContext context = liveContexts.remove(session);
         if (context == null) return;
         if (context.opening != null && !context.opening.isDone()) context.opening.cancel(true);
-        if (context.deepgram) {
+        if (context.audioStream) {
             if (context.live != null) {
-                // A disappearing browser socket is not a provider failure. Ask Deepgram to flush final metadata so
+                // A disappearing browser socket is not a provider failure. Ask the provider to flush so
                 // the provider-owned cleanup can settle measured audio and release the active claim. Logout and an
                 // explicit meeting stop remain immediate cancellation paths.
                 if ("SOCKET_CLOSED".equals(reason)) context.live.finish();
@@ -403,6 +463,16 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
 
     private String speechFailure(Throwable failure) {
         while (failure.getCause() != null) failure = failure.getCause();
+        if (failure instanceof ApiException apiFailure) {
+            log.warn("Live speech connection rejected: code={}", apiFailure.code());
+            return switch (apiFailure.code()) {
+                case "WHISPER_UNAVAILABLE" -> apiFailure.getMessage();
+                case "MONTHLY_BUDGET_EXCEEDED" -> "월 예산이 부족합니다. 사용량·예산 설정을 확인하세요.";
+                case "MEETING_BUDGET_EXCEEDED" -> "회의당 예산을 모두 사용했습니다. 사용량·예산 설정을 확인하세요.";
+                case "MEETING_AUDIO_LIMIT_EXCEEDED", "AUDIO_LIMIT_EXCEEDED" -> "회의 전사 시간 한도에 도달했습니다. 사용량·예산 설정을 확인하세요.";
+                default -> "AI 전사 준비에 실패했습니다. 잠시 후 다시 연결하세요. 원본 녹음은 계속됩니다.";
+            };
+        }
         // Only known failures are mapped. Never expose raw provider responses or credentials.
         String detail = failure.getMessage();
         if ("MONTHLY_BUDGET_EXHAUSTED".equals(detail)) return "월 예산이 부족합니다. 사용량·예산에서 예산을 저장한 뒤 AI 전사 다시 연결을 누르세요.";
@@ -423,6 +493,20 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
         publish(failure);
         send(session, failure);
         closeWithError(session, "Live speech unavailable");
+    }
+
+    private void failOpening(WebSocketSession session, LiveContext context, Throwable failure) {
+        while (failure.getCause() != null) failure = failure.getCause();
+        if (failure instanceof ApiException apiFailure
+                && Set.of("TRANSCRIPTION_RECOVERING", "TRANSCRIPTION_ALREADY_ACTIVE").contains(apiFailure.code())) {
+            sendRetry(session, context, "이전 전사 연결을 정리하고 있습니다. 잠시 후 자동으로 다시 연결합니다.");
+        } else failStream(session, context, speechFailure(failure));
+    }
+
+    private void sendRetry(WebSocketSession session, LiveContext context, String message) {
+        send(session, new SpeechEvent("stream.retry", context.meetingId, context.streamSessionId,
+                null, null, null, null, null, null, null, null, null, null, null, null, message));
+        closeWithError(session, "Retry transcription connection");
     }
 
     private void unregister(WebSocketSession session, String authSessionId) {
@@ -452,15 +536,17 @@ public class LiveWebSocketHandler extends TextWebSocketHandler {
 
     private static final class LiveContext {
         private final UUID meetingId;
-        private final boolean deepgram;
+        private final boolean audioStream;
         private volatile UUID streamSessionId;
-        private volatile CompletableFuture<DeepgramMeetingPoc> opening;
-        private volatile DeepgramMeetingPoc live;
+        private volatile CompletableFuture<? extends LiveSpeechSession> opening;
+        private volatile LiveSpeechSession live;
+        private volatile boolean finishing;
+        private volatile long lastAudioNanos;
 
-        private LiveContext(UUID meetingId, UUID streamSessionId, boolean deepgram) {
+        private LiveContext(UUID meetingId, UUID streamSessionId, boolean audioStream) {
             this.meetingId = meetingId;
             this.streamSessionId = streamSessionId;
-            this.deepgram = deepgram;
+            this.audioStream = audioStream;
         }
     }
 }

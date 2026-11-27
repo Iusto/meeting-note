@@ -19,8 +19,6 @@ class PrivateStartupTests(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp(dir=scratch))
         (self.root / "scripts").mkdir()
         script = (PROJECT / "scripts/start-private.ps1").read_text(encoding="utf-8")
-        for key in ("OPENAI_API_KEY", "DEEPGRAM_API_KEY"):
-            script = script.replace(f"[Environment]::GetEnvironmentVariable('{key}', 'User')", "''")
         (self.root / "scripts/start-private.ps1").write_text(script, encoding="utf-8")
         (self.root / "scripts/start-codex-bridge.ps1").write_text(
             "$env:AI_LLM_PROVIDER='codex'\n$env:CODEX_BRIDGE_TOKEN='mock-bridge'\n", encoding="utf-8")
@@ -29,7 +27,7 @@ class PrivateStartupTests(unittest.TestCase):
         (self.bin / "docker.ps1").write_text("""
 $global:LASTEXITCODE = 0
 if ($args[0] -eq 'info') { Write-Output $env:TEST_ENGINE; return }
-Add-Content $env:TEST_CALLS (ConvertTo-Json -Compress @{tool='docker'; args=@($args); provider=$env:AI_LLM_PROVIDER; paid=$env:PAID_API_TESTS_ENABLED; deepgram=![string]::IsNullOrWhiteSpace($env:DEEPGRAM_API_KEY); openai=![string]::IsNullOrWhiteSpace($env:OPENAI_API_KEY)})
+Add-Content $env:TEST_CALLS (ConvertTo-Json -Compress @{tool='docker'; args=@($args); provider=$env:AI_LLM_PROVIDER; speech=$env:AI_SPEECH_PROVIDER; paid=$env:PAID_API_TESTS_ENABLED; deepgram=![string]::IsNullOrWhiteSpace($env:DEEPGRAM_API_KEY); openai=![string]::IsNullOrWhiteSpace($env:OPENAI_API_KEY)})
 if ($args -contains 'up' -and $env:TEST_FAIL_UP -eq '1') { $global:LASTEXITCODE = 1 }
 """, encoding="utf-8")
         (self.bin / "tailscale.ps1").write_text("""
@@ -47,9 +45,8 @@ try {
     function Start-Sleep {}
     function Start-Process { param([string]$FilePath) Add-Content $env:TEST_CALLS (ConvertTo-Json -Compress @{tool='browser'; url=$FilePath}) }
     $openMeeting = $env:TEST_OPEN_MEETING -eq '1'
-    $apiMode = $env:TEST_API_MODE -eq '1'
-    if ($env:TEST_ENABLE_PAID -eq '1') {
-        & (Join-Path $PSScriptRoot 'scripts/start-private.ps1') -EnablePaidAi -OpenMeeting:$openMeeting -UseOpenAiApi:$apiMode
+    if ($env:TEST_ENABLE_AI -eq '1') {
+        & (Join-Path $PSScriptRoot 'scripts/start-private.ps1') -EnableAi -OpenMeeting:$openMeeting
     } else {
         & (Join-Path $PSScriptRoot 'scripts/start-private.ps1')
     }
@@ -62,7 +59,7 @@ try {
 """, encoding="utf-8")
         self.env = dict(os.environ, PATH=str(self.bin) + os.pathsep + os.environ["PATH"],
                         TEST_ENGINE="linux", TEST_BACKEND="Running", TEST_FAIL_UP="0", TEST_HTTP_STATUS="401",
-                        TEST_CALLS=str(self.root / "calls.jsonl"), TEST_ENABLE_PAID="0", PAID_API_TESTS_ENABLED="true",
+                        TEST_CALLS=str(self.root / "calls.jsonl"), TEST_ENABLE_AI="0", PAID_API_TESTS_ENABLED="true",
                         DEEPGRAM_API_KEY="caller-deepgram-secret", OPENAI_API_KEY="caller-openai-secret",
                         TAILSCALE_HOST="previous", WEB_PORT="9191")
 
@@ -101,45 +98,28 @@ try {
         self.assertTrue(any("http://127.0.0.1:8123" in c["args"] for c in self.calls()))
 
     def test_meeting_launcher_opens_browser_only_after_success(self):
-        self.env.update(TEST_ENABLE_PAID="1", TEST_OPEN_MEETING="1")
+        self.env.update(TEST_ENABLE_AI="1", TEST_OPEN_MEETING="1")
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.calls()[-1], {"tool": "browser", "url": "https://meeting.example.ts.net/meetings/new"})
 
     def test_meeting_launcher_does_not_open_browser_after_startup_failure(self):
-        self.env.update(TEST_ENABLE_PAID="1", TEST_OPEN_MEETING="1", TEST_FAIL_UP="1")
+        self.env.update(TEST_ENABLE_AI="1", TEST_OPEN_MEETING="1", TEST_FAIL_UP="1")
         result = self.run_script()
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any(c["tool"] == "browser" for c in self.calls()))
 
-    def test_explicit_paid_start_passes_existing_keys_without_persisting_or_printing_them(self):
-        self.env["TEST_API_MODE"] = "1"
-        self.env["TEST_ENABLE_PAID"] = "1"
+    def test_local_ai_uses_whisper_overlay_and_codex_without_provider_keys(self):
+        self.env.update(TEST_ENABLE_AI="1", DEEPGRAM_API_KEY="", OPENAI_API_KEY="")
+        runner = self.root / "run.ps1"
+        runner.write_text(runner.read_text().replace("$env:DEEPGRAM_API_KEY -ne 'caller-deepgram-secret'", "[bool]$env:DEEPGRAM_API_KEY")
+                          .replace("$env:OPENAI_API_KEY -ne 'caller-openai-secret'", "[bool]$env:OPENAI_API_KEY"))
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         docker_calls = [call for call in self.calls() if call["tool"] == "docker"]
-        self.assertTrue(all(call["paid"] == "true" for call in docker_calls))
-        self.assertTrue(all(call["deepgram"] and call["openai"] for call in docker_calls))
-        output_and_file = result.stdout + result.stderr + (self.root / ".env").read_text()
-        self.assertNotIn("caller-deepgram-secret", output_and_file)
-        self.assertNotIn("caller-openai-secret", output_and_file)
-
-    def test_explicit_paid_start_requires_both_provider_keys(self):
-        self.env["TEST_API_MODE"] = "1"
-        self.env["TEST_ENABLE_PAID"] = "1"
-        self.env["OPENAI_API_KEY"] = ""
-        result = self.run_script()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("requires OPENAI_API_KEY", result.stdout + result.stderr)
-        self.assertFalse((self.root / ".env").exists())
-        self.assertEqual(self.calls(), [])
-
-    def test_codex_default_clears_api_key_and_passes_only_speech_key(self):
-        self.env["TEST_ENABLE_PAID"] = "1"
-        result = self.run_script()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        docker_calls = [call for call in self.calls() if call["tool"] == "docker"]
-        self.assertTrue(all(call["provider"] == "codex" and call["deepgram"] and not call["openai"] for call in docker_calls))
+        self.assertTrue(all("compose.whisper.yaml" in call["args"] for call in docker_calls))
+        self.assertTrue(all(call["provider"] == "codex" and call["speech"] == "whisper" for call in docker_calls))
+        self.assertTrue(all(call["paid"] == "false" and not call["deepgram"] and not call["openai"] for call in docker_calls))
 
     def test_inaccessible_engine_stops_before_configuration(self):
         self.env["TEST_ENGINE"] = "windows"

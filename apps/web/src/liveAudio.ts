@@ -4,6 +4,9 @@ const SAMPLE_RATE = 16_000
 const SOCKET_OPEN = 1
 const DEFAULT_MAX_BUFFERED_BYTES = 256 * 1024
 const DEFAULT_MAX_QUEUED_SAMPLES = SAMPLE_RATE * 2
+const HEARTBEAT_INTERVAL_MS = 5_000
+const RESPONSE_TIMEOUT_MS = 15_000
+const MAX_RECONNECT_ATTEMPTS = 12
 
 interface SocketLike {
   binaryType: BinaryType
@@ -41,6 +44,8 @@ export interface LivePcmTransportOptions {
   cancelSchedule?: (id: number) => void
   maxBufferedBytes?: number
   maxQueuedSamples?: number
+  finishTimeoutMs?: number
+  now?: () => number
 }
 
 export class LivePcmTransport {
@@ -55,6 +60,8 @@ export class LivePcmTransport {
   private stopPromise?: Promise<void>
   private resolveStop?: () => void
   private generation = 0
+  private lastResponseMs = 0
+  private lastPingMs = 0
   private readonly createSocket: (url: string) => SocketLike
   private readonly schedule: (callback: () => void, delayMs: number) => number
   private readonly cancelSchedule: (id: number) => void
@@ -80,9 +87,19 @@ export class LivePcmTransport {
     this.capturedSamples = frame.endSample
     if (this.terminal) { this.drop([frame], 'disconnected'); return }
 
+    // TCP/WebSocket can stay OPEN through a network outage. Audio capture keeps
+    // running, so use its frames to check application-level replies as well.
+    if (this.socket && this.now() - this.lastResponseMs >= RESPONSE_TIMEOUT_MS) this.restart()
+
     if (this.ready && this.socket?.readyState === SOCKET_OPEN) {
+      if (this.now() - this.lastPingMs >= HEARTBEAT_INTERVAL_MS) {
+        this.lastPingMs = this.now()
+        try { this.socket.send(JSON.stringify({ type: 'stream.ping' })) }
+        catch { this.drop([frame], 'disconnected'); this.restart(); return }
+      }
       if (this.socket.bufferedAmount <= (this.options.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES)) {
-        this.socket.send(frame.data)
+        try { this.socket.send(frame.data) }
+        catch { this.drop([frame], 'disconnected'); this.restart() }
       } else {
         this.drop([frame], 'backpressure')
         this.restart()
@@ -118,7 +135,7 @@ export class LivePcmTransport {
       this.resolveStop = resolve
       if (this.ready && this.socket?.readyState === SOCKET_OPEN) {
         this.socket.send(JSON.stringify({ type: 'stream.stop' }))
-        this.schedule(() => this.finish(), 10_000)
+        this.schedule(() => this.finish(), this.options.finishTimeoutMs ?? 10_000)
       } else {
         this.finish()
       }
@@ -131,6 +148,8 @@ export class LivePcmTransport {
     this.options.onConnecting?.(this.reconnectAttempt > 0)
     const generation = ++this.generation
     this.ready = false
+    this.lastResponseMs = this.now()
+    this.lastPingMs = this.now()
     const firstQueuedSample = this.capturedSamples
     const socket = this.createSocket(this.options.socketUrl(this.options.meetingId, this.offsetMs(firstQueuedSample)))
     socket.binaryType = 'arraybuffer'
@@ -139,11 +158,16 @@ export class LivePcmTransport {
       if (generation !== this.generation || typeof message.data !== 'string') return
       try {
         const event = JSON.parse(message.data) as LiveEvent
+        this.lastResponseMs = this.now()
+        if (event.type === 'stream.pong') return
         this.options.onEvent(event)
         if (event.type === 'session.ready') {
           this.ready = true
           this.reconnectAttempt = 0
           this.flushQueue()
+        } else if (event.type === 'stream.retry') {
+          if (this.stopping) this.finish()
+          else this.restart()
         } else if (event.type === 'stream.error') {
           this.terminal = true
           this.finish()
@@ -196,6 +220,13 @@ export class LivePcmTransport {
 
   private scheduleReconnect() {
     if (this.reconnectTimer !== undefined || this.stopping || this.terminal) return
+    if (this.reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+      this.terminal = true
+      this.options.onEvent({ type: 'stream.error', meetingId: this.options.meetingId,
+        message: 'AI 자동 재연결을 완료하지 못했습니다. 인터넷 상태를 확인한 뒤 AI 전사 다시 연결을 누르세요. 원본 녹음은 계속됩니다.' })
+      this.finish()
+      return
+    }
     const delay = Math.min(8_000, 500 * (2 ** this.reconnectAttempt))
     this.reconnectAttempt += 1
     this.reconnectTimer = this.schedule(() => {
@@ -212,6 +243,8 @@ export class LivePcmTransport {
   private offsetMs(samples: number) {
     return Math.max(0, this.options.baseOffsetMs ?? 0) + samplesToMs(samples)
   }
+
+  private now() { return this.options.now?.() ?? performance.now() }
 
   private finish() {
     if (this.queue.length) { this.drop(this.queue, 'disconnected'); this.queue = [] }

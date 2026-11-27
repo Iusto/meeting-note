@@ -13,6 +13,7 @@ import dev.aimeeting.api.meeting.MeetingRepository;
 import dev.aimeeting.api.meeting.TranscriptSegment;
 import dev.aimeeting.api.summary.SummaryService;
 import dev.aimeeting.api.summary.MeetingSummary;
+import dev.aimeeting.api.summary.SummaryProgress;
 import dev.aimeeting.api.provider.SummaryProvider;
 import dev.aimeeting.api.topic.GlossaryTerm;
 import dev.aimeeting.api.topic.Topic;
@@ -341,9 +342,14 @@ class OpenAiMeetingOrchestratorIntegrationTest {
             }
         });
 
-        MeetingSummary result = orchestrator.generateSummary(UUID.randomUUID(), meeting.id()).join();
+        var progress = new java.util.ArrayList<SummaryProgress>();
+        MeetingSummary result = orchestrator.generateSummary(UUID.randomUUID(), meeting.id(), progress::add).join();
 
         assertThat(calls).hasValue(3);
+        assertThat(progress).extracting(SummaryProgress::percent).containsExactly(20, 40, 60, 80, 100);
+        assertThat(progress).extracting(SummaryProgress::stage).containsExactly(SummaryProgress.Stage.CHUNKS,
+                SummaryProgress.Stage.CHUNKS, SummaryProgress.Stage.SYNTHESIS, SummaryProgress.Stage.SAVING,
+                SummaryProgress.Stage.COMPLETED);
         assertThat(result.content().sourceSegmentIds()).containsExactly(transcript.getFirst().id());
         assertThat(jdbc.queryForObject("SELECT COUNT(*) FROM ai_usage_records WHERE meeting_id=?", Integer.class,
                 meeting.id())).isEqualTo(3);

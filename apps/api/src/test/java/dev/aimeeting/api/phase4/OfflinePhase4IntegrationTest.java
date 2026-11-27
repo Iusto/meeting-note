@@ -143,6 +143,36 @@ class OfflinePhase4IntegrationTest {
     }
 
     @Test
+    @Transactional
+    void exportsKoreanMeetingSummaryAndTranscriptAsDocx() throws Exception {
+        Meeting meeting = meetings.create("기획 & 개발 회의");
+        meetings.start(meeting.id());
+        meetings.insertFinal(meeting.id(), "docx-event", 1, 1000, 3000, "시안 <검토> 📋", "speaker-1");
+        meetings.stop(meeting.id());
+        summaries.generate(meeting.id());
+        byte[] bytes = mvc.perform(get("/api/v1/meetings/{id}/export", meeting.id()).cookie(session)
+                        .queryParam("format", "docx"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Content-Disposition", "attachment; filename=\"meeting-" + meeting.id() + ".docx\""))
+                .andReturn().getResponse().getContentAsByteArray();
+        try (var zip = new java.util.zip.ZipInputStream(new java.io.ByteArrayInputStream(bytes))) {
+            var names = new java.util.ArrayList<String>();
+            String text = "";
+            java.util.zip.ZipEntry entry;
+            while ((entry = zip.getNextEntry()) != null) {
+                names.add(entry.getName());
+                if (entry.getName().equals("word/document.xml")) {
+                    var parser = javax.xml.parsers.DocumentBuilderFactory.newInstance().newDocumentBuilder();
+                    text = parser.parse(new java.io.ByteArrayInputStream(zip.readAllBytes()))
+                            .getDocumentElement().getTextContent();
+                }
+            }
+            assertThat(names).containsExactly("[Content_Types].xml", "_rels/.rels", "word/document.xml");
+            assertThat(text).contains("기획 & 개발 회의", "핵심 요약", "시안 <검토> 📋", "발언 기록", "00:00:01");
+        }
+    }
+
+    @Test
     void exportEndpointRequiresAuthenticationAndReturnsAttachmentsAndBoundedErrors() throws Exception {
         Meeting meeting = meetings.create("Attachment export");
 

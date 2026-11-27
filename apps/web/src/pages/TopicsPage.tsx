@@ -24,7 +24,8 @@ export function TopicsPage({ onUnauthorized }: { onUnauthorized: () => void }) {
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
   const [aiConfiguration, setAiConfiguration] = useState<AiConfiguration>()
-  const paidLlm = Boolean(aiConfiguration?.enabled && aiConfiguration.llmAvailable)
+  const realLlm = Boolean(aiConfiguration?.llmAvailable)
+  const deepgram = aiConfiguration?.speechProvider === 'DEEPGRAM' && aiConfiguration.speechAvailable
 
   function report(caught: unknown) {
     if (caught instanceof ApiError && caught.status === 401) onUnauthorized()
@@ -80,7 +81,7 @@ export function TopicsPage({ onUnauthorized }: { onUnauthorized: () => void }) {
   return <main className="mx-auto max-w-7xl px-5 py-10 md:px-10">
     <AppLink className="text-sm font-bold text-moss underline" href="/meetings">회의 목록</AppLink>
     <h1 className="mt-6 text-3xl font-black">주제와 용어 사전</h1>
-    <p className="mt-3 text-sm leading-6 text-slate-500">용어를 하나씩 검토해 승인하세요. 승인된 표준어만 최대 100개까지 전사에 사용할 후보가 됩니다. 같은 표준어를 연결한 주제는 수정과 승인 상태를 공유합니다. {paidLlm ? 'AI 후보 생성 버튼을 누를 때만 유료 요청이 발생합니다.' : '현재 후보 생성은 비용 없는 가상 결과입니다.'}</p>
+    <p className="mt-3 text-sm leading-6 text-slate-500">회의에 주제를 선택하면 승인된 별칭으로 전사문 교정 후보를 만들 수 있습니다. 같은 표준어를 연결한 주제는 수정과 승인 상태를 공유합니다.</p>
     {error && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-4 text-sm text-red-800">{error}</p>}
     {message && <p role="status" className="mt-4 text-sm font-bold text-moss">{message}</p>}
     <div className="mt-8 grid gap-6 lg:grid-cols-[17rem_1fr]">
@@ -99,11 +100,11 @@ export function TopicsPage({ onUnauthorized }: { onUnauthorized: () => void }) {
           <button className="button-secondary mt-3" disabled={busy || !name.trim()}>주제 수정 저장</button>
           <button type="button" className="ml-3 text-sm text-red-700 underline" disabled={busy} onClick={() => { if (window.confirm('이 주제와 연결된 용어를 삭제할까요? 사용 중인 주제는 삭제할 수 없습니다.')) void act(async () => { await knowledgeApi.deleteTopic(selected); setSelected(''); setTopics(await knowledgeApi.topics()) }, '주제를 삭제했습니다.') }}>주제 삭제</button>
         </form>
-        <div className="rounded-2xl bg-mint p-5 text-sm"><p className="font-black">승인된 keyterm 후보 {keyterms.length}/100</p><p className="mt-2 break-words text-moss">{keyterms.join(' · ') || '아직 승인한 용어가 없습니다.'}</p></div>
+        {deepgram && <div className="rounded-2xl bg-mint p-5 text-sm"><p className="font-black">Deepgram 전사 용어 {keyterms.length}/100</p><p className="mt-2 break-words text-moss">{keyterms.join(' · ') || '아직 승인한 용어가 없습니다.'}</p></div>}
         <div className="rounded-2xl bg-white p-5">
           <h2 className="text-lg font-black">용어 목록</h2>
-          <button className="button-secondary mt-3" disabled={busy} onClick={() => void act(async () => { await knowledgeApi.suggestTerms(selected); await reload() }, `${paidLlm ? 'AI' : '가상'} 후보를 추가했습니다. 개별 승인 전에는 사용하지 않습니다.`)}>{paidLlm ? 'AI 용어 후보 생성' : '가상 용어 후보 불러오기'}</button>
-          <p className="mt-2 text-xs text-slate-500">{paidLlm ? '버튼을 누르면 주제 이름과 설명을 외부 AI로 전송합니다. 생성 결과는 승인 전까지 전사에 사용하지 않습니다.' : 'MES/LOT 예제 데이터이며 실제 AI 추천이 아닙니다.'}</p>
+          <button className="button-secondary mt-3" disabled={busy} onClick={() => void act(async () => { await knowledgeApi.suggestTerms(selected); await reload() }, `${realLlm ? 'AI' : '가상'} 후보를 추가했습니다. 개별 승인 전에는 사용하지 않습니다.`)}>{realLlm ? 'AI 용어 후보 생성' : '가상 용어 후보 불러오기'}</button>
+          <p className="mt-2 text-xs text-slate-500">{realLlm ? '버튼을 누르면 주제 이름과 설명을 OpenAI에 보내 후보를 생성합니다. 후보를 사용하려면 승인하세요.' : 'MES/LOT 예제 데이터이며 실제 AI 추천이 아닙니다.'}</p>
           <div className="mt-4 space-y-3">{terms.map((term) => <article key={term.id} className="rounded-xl border border-moss/10 p-4" aria-label={`용어 ${term.canonical}`}>
             <p className="font-black">{term.canonical} <span className="text-xs font-semibold text-moss">{statusLabels[term.status]} · {term.source}</span></p>
             <p className="mt-1 text-sm text-slate-600">{term.meaning}</p><p className="mt-1 text-xs text-slate-500">별칭: {term.aliases.join(', ') || '없음'}</p>

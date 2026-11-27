@@ -62,6 +62,10 @@ public class RecordingRepository {
         return jdbc.queryForObject(METADATA_SELECT + " WHERE id=?", this::metadata, recordingId);
     }
 
+    public void setImportDuration(UUID meetingId, long durationMs) {
+        jdbc.update("UPDATE recordings SET duration_ms=? WHERE meeting_id=?", durationMs, meetingId);
+    }
+
     private RecordingMetadata metadata(ResultSet rs, int row) throws SQLException {
         return new RecordingMetadata(rs.getObject("id", UUID.class), rs.getObject("meeting_id", UUID.class),
                 rs.getString("state"), (Long) rs.getObject("bytes"), rs.getString("sha256"),

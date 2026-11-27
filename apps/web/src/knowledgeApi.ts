@@ -19,6 +19,13 @@ export interface CorrectionSuggestion {
   id: string; segmentId: string; expectedRevision: number; originalSpan: string
   replacement: string; reason: string; state: 'PENDING' | 'APPLIED' | 'REJECTED'
 }
+export interface SummaryProgress {
+  stage: 'IDLE' | 'PREPARING' | 'CHUNKS' | 'SYNTHESIS' | 'SAVING' | 'COMPLETED'
+  percent: number
+  completedChunks: number
+  totalChunks: number
+}
+
 const body = (method: string, value: unknown) => ({ method, body: JSON.stringify(value) })
 export const knowledgeApi = {
   topics: () => request<Topic[]>('/topics'),
@@ -32,6 +39,7 @@ export const knowledgeApi = {
   keyterms: (id: string) => request<string[]>(`/topics/${id}/keyterms`),
   suggestTerms: (id: string) => request<Term[]>(`/topics/${id}/suggest-terms`, { method: 'POST' }),
   summary: (id: string) => request<MeetingSummary>(`/meetings/${id}/summary`),
+  summaryProgress: (id: string, signal: AbortSignal) => request<SummaryProgress>(`/meetings/${id}/summary/progress`, { signal, cache: 'no-store' }),
   generateSummary: (id: string) => request<MeetingSummary>(`/meetings/${id}/summary`, { method: 'POST' }),
   corrections: (id: string) => request<CorrectionSuggestion[]>(`/meetings/${id}/correction-suggestions`, { method: 'POST' }),
   reviewCorrection: (meetingId: string, id: string, state: 'APPLIED' | 'REJECTED') => request<CorrectionSuggestion>(`/meetings/${meetingId}/correction-suggestions/${id}`, body('PATCH', { state })),
